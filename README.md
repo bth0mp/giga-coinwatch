@@ -12,7 +12,7 @@ The five dealer scopes enabled by default are:
 | MRB Coins | Roman Republic, $35 or less |
 | Edward J. Waddell / Coin.com | Roman Republican silver |
 
-The bundled registry contains 81 dealer/storefront entries, including additional ancient and mixed-period sellers saved for review. Dealers with restrictions on automated collection stay disabled. Coverage is limited to the categories above, not each shop's full inventory; see [source validation](docs/source-validation.md) for evidence and limitations. Discovery checks public dealer directories and queues additional domains for review, with supporting shop links when it can verify fixed-price ancient stock. Accepting a dealer saves it to Sources; recurring monitoring needs a validated parser.
+The bundled registry contains 81 dealer/storefront entries, including additional ancient and mixed-period sellers saved for review. Dealers with restrictions on automated collection stay disabled. Coverage is limited to the categories above, not each shop's full inventory; see [source validation](docs/source-validation.md) for evidence and limitations. Discovery checks a public dealer directory and, when Tavily is configured, searches the wider web for additional domains. Leads enter a review queue, with supporting shop links when fixed-price ancient stock can be confirmed. Accepting a dealer saves it to Sources; recurring monitoring needs a validated parser.
 
 Choose **one** running mode for a collection database. Both modes serve the dashboard at <http://127.0.0.1:8000/> and run the daily schedule inside giga-coinwatch. Keep the PC awake for scheduled scans.
 
@@ -23,7 +23,7 @@ Open **Wanted coins** to save a search by coin type, mint, ruler, keywords, excl
 Matches include available coins from the initial inventory and subsequent scans, with a link to the seller and the last observed price. These are seller-text matches, not verified coin attributions. Pausing a wanted search stops its automatic web queries; the saved local match view stays usable. Editing the criteria clears old web leads for that search. Deleting a search leaves catalog and saved coins intact.
 
 - **Scan coins** refreshes enabled, supported dealer stock and checks enabled wanted searches on the web when configured.
-- **Find dealers** checks public directories for additional dealer candidates; it does not rescan coin inventory. Review leads under **Discoveries**. A newly accepted dealer still needs a validated parser before monitoring can be enabled.
+- **Find dealers** searches Tavily when configured and checks the supported public directory for additional dealer candidates; it does not rescan coin inventory. Review leads under **Discoveries**. A newly accepted dealer still needs a validated parser before monitoring can be enabled.
 - **Scan both** does both jobs. The daily schedule uses this mode.
 - **Scan for this search** refreshes dealer stock and runs the selected wanted search on the web if opted in. It also works for a paused search as an explicit one-off check.
 
@@ -34,6 +34,8 @@ Only one scan runs at a time. A coin-only, dealer-only or targeted scan does not
 Monitored-dealer searches and directory discovery work without an API key. Each wanted search also has an **Open web search** link for manual use. To enable automatic web leads later, create a [Tavily account](https://app.tavily.com/) and enter its API key in **Settings → Wider-web search**. As checked on 25 September 2026, Tavily offers 1,000 free API credits per month without a payment card; check its [current allowance and pricing](https://docs.tavily.com/documentation/api-credits) before enabling paid usage.
 
 giga-coinwatch uses basic searches (one credit per query), at most five wanted searches per scan, prioritizing those least recently attempted. More than five enabled searches rotate across scans. Manual scans also use credits. There are no automatic API retries, and the app does not enable billing or purchase credits. Each query requests up to ten leads. Searches send the coin criteria and exclusions to Tavily; price and currency limits apply to catalog matches, not unverified web leads.
+
+Dealer discovery uses up to two additional basic queries per dealer/combined scan, rotating among ancient-coin categories. Each requests up to twenty search results; at most ten new domains from web search are inspected, with at most three public pages per domain. Up to 150 known domains are excluded at the provider, and all known/dismissed domains are filtered locally. Combined scans therefore use at most seven basic queries. Search snippets alone never confirm a dealer's stock: inaccessible or unclear pages remain labelled for review. IAPN and Artemis interactive directories, and the access-blocked VCoins directory, are not automatic static-directory inputs.
 
 Web results are clearly labelled **unverified** and can include auctions, sold coins or pages without a price. They never enter the monitored-dealer catalog automatically. A successful query replaces that search's prior lead list; a failed query keeps prior leads visible with the error and check time.
 

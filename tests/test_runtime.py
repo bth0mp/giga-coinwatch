@@ -207,6 +207,67 @@ def test_runtime_unknown_wanted_search_does_not_start_worker(tmp_path):
     assert db.runs() == []
 
 
+def test_dealer_mode_uses_tavily_and_directories_without_scanning_coins(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-key')
+    indices = []
+    def web(fetcher, known, key, **options):
+        assert key == 'test-key'
+        indices.append(options['query_index'])
+        return [dict(url='https://new.example/coins', name='New shop')]
+    def directory(fetcher, known, **options):
+        assert 'new.example' in known
+        return []
+    monkeypatch.setattr('coinwatch.discovery.discover_web', web)
+    monkeypatch.setattr('coinwatch.discovery.discover', directory)
+    result = Scanner(db).run(mode='dealers')
+    assert result['status'] == 'complete' and result['candidates'] == 1
+    assert 'Tavily' in result['summary'] and result['seen'] == 0
+    Scanner(db).run(mode='dealers')
+    assert indices == [0, 2]
+
+
+def test_web_dealer_failure_keeps_directory_results(tmp_path, monkeypatch):
+    from coinwatch.discovery import DiscoveryError
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-key')
+    def web(*args, **kwargs):
+        raise DiscoveryError([], [dict(url='Tavily', error='Usage limit reached')])
+    monkeypatch.setattr('coinwatch.discovery.discover_web', web)
+    monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [dict(url='https://new.example/coins', name='New shop')])
+    result = Scanner(db).run(mode='dealers')
+    assert result['status'] == 'partial' and result['candidates'] == 1
+    assert 'Usage limit reached' in result['summary']
+
+
+def test_dealer_mode_without_key_is_explicit_and_does_not_call_tavily(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
+    monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [])
+    def unexpected(*args, **kwargs):
+        raise AssertionError('Tavily called without a key')
+    monkeypatch.setattr('coinwatch.discovery.discover_web', unexpected)
+    result = Scanner(db).run(mode='dealers')
+    assert result['status'] == 'complete' and 'directory only' in result['summary']
+
+
+def test_late_dealer_results_cannot_write_after_lease_revocation(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-key')
+    def web(*args, **kwargs):
+        db.finish_run(scanner.run_id, 'interrupted', 'Stopped')
+        return [dict(url='https://new.example/coins', name='New shop')]
+    monkeypatch.setattr('coinwatch.discovery.discover_web', web)
+    monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [])
+    scanner = Scanner(db)
+    result = scanner.run(mode='dealers')
+    assert result['status'] == 'interrupted' and db.list_candidates() == []
+
+
 def wanted_search(db, name='Athens owl', **values):
     fields = dict(name=name, keywords='Athens', include_web=True, enabled=True)
     fields.update(values)
@@ -296,10 +357,14 @@ def test_dealer_scan_never_queries_wanted_web_searches(tmp_path, monkeypatch):
     watch = wanted_search(db)
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
     monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [])
-    def unexpected_search(*args, **kwargs):
-        raise AssertionError('Dealer-only scan attempted a wanted coin search')
-    monkeypatch.setattr('coinwatch.web_search.search_web', unexpected_search)
+    queries = []
+    def dealer_search(query, *args, **kwargs):
+        assert query != db.get_search(watch)['web_query']
+        queries.append(query)
+        return []
+    monkeypatch.setattr('coinwatch.web_search.search_web', dealer_search)
     assert Scanner(db).run(mode='dealers')['status'] == 'complete'
+    assert len(queries) == 2
     assert db.search_results(watch)['status'] == 'idle'
 
 

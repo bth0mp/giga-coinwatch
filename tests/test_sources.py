@@ -104,6 +104,19 @@ def test_shanna_sold_items_never_appear_available():
     assert all(x.category == "Greek" for x in result.listings)
 
 
+def test_shanna_retains_later_valid_products_and_reports_each_untitled_card():
+    url = "https://www.shannaschmidt.com/greek-coins"
+    result = scrape_source(source("shanna", url), FixtureFetcher({url: fixture("shanna-untitled.html")}))
+    assert not result.complete and result.pages == 1
+    assert [(x.external_id, x.availability) for x in result.listings] == [
+        ("69798891d42a8175ab7a8cf1", "available"),
+        ("693c623c144d875d2d92da4c", "sold"),
+    ]
+    assert "2 unreadable product cards" in result.error
+    assert "6ab15e2bd5e67563c3b314c1: missing title" in result.error
+    assert "6a4d67b1c2a02a027d2166cf: missing title" in result.error
+
+
 def test_palmyra_roman_category_uses_usd_and_purchase_control():
     url = "https://palmyraheritagegallery.com/product-category/ancient-coins/roman/"
     result = scrape_source(source("palmyra", url), FixtureFetcher({url: fixture("palmyra.html")}))

@@ -1,5 +1,6 @@
 import logging
 import threading
+from urllib.parse import urlsplit
 
 from .fetch import Fetcher
 
@@ -76,6 +77,58 @@ class Scanner:
                 leads += len(results)
         return queries, leads
 
+    def _scan_dealers(self, fetcher, errors, notes):
+        from .discovery import DEALER_QUERIES, DiscoveryError, discover, discover_web
+        from .web_search import WebSearchError, load_api_key
+
+        known = self.db.known_domains()
+        try:
+            api_key = load_api_key(self.db.path.parent)
+        except WebSearchError as exc:
+            errors.append(f'Web dealer discovery: {exc}')
+            api_key = ''
+        try:
+            query_index = int(self.db.settings().get('dealer_query_index', '0')) % len(DEALER_QUERIES)
+        except ValueError:
+            query_index = 0
+        count = 0
+        checks = []
+        if api_key:
+            checks.append(('Tavily dealer search', lambda: discover_web(fetcher, known, api_key, query_index=query_index)))
+            notes.append('Dealer discovery: Tavily (up to two basic searches) and the public directory.')
+        else:
+            notes.append('Dealer discovery: public directory only; add a Tavily API key in Settings for wider-web discovery.')
+        checks.append(('Dealer directory', lambda: discover(fetcher, known, limit=20-count)))
+        for label, check in checks:
+            if self.stop_event.is_set():
+                break
+            self.progress(phase='Finding dealers', source=label)
+            try:
+                found = check()
+            except DiscoveryError as exc:
+                found = exc.candidates
+                errors.append(f'{label}: {exc}')
+            except Exception:
+                found = []
+                errors.append(f'{label}: could not complete this check. Please try again later.')
+            if self.stop_event.is_set() or not self.db.renew_lease(self.run_id):
+                self.stop_event.set()
+                break
+            if label == 'Tavily dealer search':
+                self.db.set_internal('dealer_query_index', (query_index + 2) % len(DEALER_QUERIES))
+            for candidate in found:
+                if self.stop_event.is_set():
+                    break
+                try:
+                    if not self.db.save_candidate(candidate, run_id=self.run_id):
+                        self.stop_event.set()
+                        break
+                    known.add(urlsplit(candidate['url']).hostname.lower().removeprefix('www.'))
+                    count += 1
+                except Exception as exc:
+                    errors.append(f'Candidate skipped: {exc}')
+        return count
+
     def run(self, kind='manual', source_ids=None, include_discovery=True, mode='both', search_id=None):
         mode = normalize_scan_mode(mode, include_discovery)
         selected_search = get_scan_search(self.db, mode, search_id)
@@ -132,20 +185,7 @@ class Scanner:
                     else:
                         notes.append(f"Wanted search \"{current_search['name']}\": {matches} matching catalog listings.")
             if mode in ('dealers', 'both') and not self.stop_event.is_set():
-                self.progress(phase='Finding dealers', source='Dealer directories')
-                try:
-                    from .discovery import discover
-                    found = discover(fetcher, self.db.known_domains(), limit=20)
-                except Exception as e:
-                    found = getattr(e, 'candidates', [])
-                    errors.append(f'Dealer discovery: {e}')
-                    log.warning('Discovery partial: %s', e)
-                for candidate in found:
-                    try:
-                        self.db.save_candidate(candidate)
-                        candidates += 1
-                    except Exception as e:
-                        errors.append(f'Candidate skipped: {e}')
+                candidates = self._scan_dealers(fetcher, errors, notes)
             if self.stop_event.is_set():
                 status = 'interrupted'
             elif errors:

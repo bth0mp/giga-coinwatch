@@ -1,6 +1,7 @@
 """Optional Tavily search with local credentials and unverified web leads."""
 import json
 import os
+import re
 import tempfile
 import unicodedata
 from pathlib import Path
@@ -118,7 +119,28 @@ def _clean_url(value):
         return ''
 
 
-def search_web(query, api_key, *, max_results=10) -> list[dict]:
+def _exclude_domains(domains):
+    if not isinstance(domains, list) or len(domains) > 150:
+        raise WebSearchError('Provide at most 150 domain names to exclude.')
+    clean = []
+    for domain in domains:
+        try:
+            if not isinstance(domain, str) or not domain or domain != domain.strip():
+                raise ValueError('Invalid hostname')
+            host = domain.encode('idna').decode('ascii').lower()
+            labels = host.split('.')
+            if (len(host) > 253 or len(labels) < 2 or labels[-1].isdigit()
+                    or any(not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', label) for label in labels)):
+                raise ValueError('Invalid hostname')
+            validate_url_shape('https://' + host)
+        except (FetchError, ValueError, UnicodeError):
+            raise WebSearchError('Excluded domains must be public hostnames without paths, ports, credentials, or wildcards.') from None
+        if host not in clean:
+            clean.append(host)
+    return clean
+
+
+def search_web(query, api_key, *, max_results=10, exclude_domains=None) -> list[dict]:
     """Return search leads, without claiming price or availability verification."""
     _validate_key(api_key)
     if not isinstance(query, str) or not query.strip() or len(query) > 1000:
@@ -130,6 +152,8 @@ def search_web(query, api_key, *, max_results=10) -> list[dict]:
         'topic': 'general', 'include_answer': False, 'include_raw_content': False,
         'include_images': False, 'auto_parameters': False,
     }
+    if exclude_domains is not None:
+        payload['exclude_domains'] = _exclude_domains(exclude_domains)
     try:
         # A fixed destination, no environment proxies and no redirects keep the
         # bearer token at the intended API. Do not automatically spend retry credits.

@@ -145,3 +145,79 @@ def test_product_detail_takes_priority_over_homepage_navigation(monkeypatch):
     found = discovery.discover(fetcher, set())
     assert found[0]["evidence_url"] == detail
     assert fetcher.requests == [directory, home, catalog, detail]
+
+
+def test_web_dealer_discovery_excludes_known_sites_and_requires_shop_evidence(monkeypatch):
+    calls = []
+    def search(query, key, **options):
+        calls.append((query, options))
+        return [
+            dict(url='https://old.example/coins', title='Ancient coins for sale', snippet='Coin shop'),
+            dict(url='https://shop.old.example/coins', title='Ancient coins for sale', snippet='Coin shop'),
+            dict(url='https://new.example/coins', title='Ancient coins for sale', snippet='Coin shop'),
+            dict(url='https://new.example/other', title='Ancient coins for sale', snippet='Coin shop'),
+            dict(url='https://museum.example/roman', title='Roman coin history', snippet='Collection exhibit'),
+            dict(url='https://www.facebook.com/dealer/posts/1', title='Ancient coin shop', snippet='Roman coins for sale'),
+            dict(url='https://auction.example/auction/1', title='Ancient coin auction', snippet='Bid now'),
+            dict(url='http://127.0.0.1/private', title='Ancient coin shop', snippet='For sale'),
+        ]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    fetcher = FixtureFetcher({'https://new.example/coins': fixture('dealer-shop.html')})
+    found = discovery.discover_web(fetcher, {'old.example'}, 'test-key')
+    assert len(calls) == 2 and calls[0][0] != calls[1][0]
+    assert calls[0][1]['exclude_domains'] == ['old.example']
+    assert len(found) == 1 and found[0]['domain'] == 'new.example'
+    assert found[0]['evidence_url'] == 'https://new.example/coins'
+    assert found[0]['discovered_from'].startswith('Tavily:')
+    assert fetcher.requests == ['https://new.example/coins']
+
+
+def test_web_snippet_is_not_fixed_price_evidence_and_candidate_limit_is_bounded(monkeypatch):
+    queries = []
+    def search(query, key, **kwargs):
+        queries.append(query)
+        return [dict(url=f'https://shop{i}.example/coins', title='Ancient coin shop', snippet='Roman coins $10 add to cart') for i in range(20)]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    fetcher = FixtureFetcher({'https://shop0.example/coins': '<h1>Dealer homepage</h1>'})
+    found = discovery.discover_web(fetcher, set(), 'test-key', query_index=2, limit=1)
+    assert len(found) == len(queries) == 1
+    assert found[0]['evidence_url'] == '' and 'Unclear' in found[0]['reason']
+    assert queries[0] == discovery.DEALER_QUERIES[2]
+
+
+def test_web_provider_failure_keeps_other_query_leads_and_hides_unknown_error(monkeypatch):
+    calls = []
+    def search(query, key, **kwargs):
+        calls.append(query)
+        if len(calls) == 1:
+            raise RuntimeError('Transport details containing test-secret')
+        return [dict(url='https://new.example/coins', title='Ancient coin shop', snippet='For sale')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    with pytest.raises(discovery.DiscoveryError) as raised:
+        discovery.discover_web(FixtureFetcher({'https://new.example/coins': fixture('dealer-shop.html')}), set(), 'test-secret')
+    assert len(raised.value.candidates) == 1 and len(calls) == 2
+    assert 'test-secret' not in str(raised.value)
+
+
+def test_web_discovery_does_not_request_urls_after_stop(monkeypatch):
+    import threading
+    fetcher = FixtureFetcher({})
+    fetcher.stop_event = threading.Event()
+    def search(query, key, **kwargs):
+        fetcher.stop_event.set()
+        return [dict(url='https://new.example/coins', title='Ancient coin shop', snippet='For sale')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    assert discovery.discover_web(fetcher, set(), 'test-key') == []
+    assert fetcher.requests == []
+
+
+def test_large_known_registry_rotates_provider_exclusions(monkeypatch):
+    batches = []
+    def search(query, key, **kwargs):
+        batches.append(set(kwargs['exclude_domains']))
+        return []
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    known = {f'dealer{i}.example' for i in range(229)}
+    assert discovery.discover_web(FixtureFetcher({}), known, 'test-key') == []
+    assert len(batches[0]) == len(batches[1]) == 150
+    assert batches[0] | batches[1] == known

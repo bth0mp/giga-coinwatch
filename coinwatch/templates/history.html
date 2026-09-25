@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block title %}History{% endblock %}
 {% block content %}
-<div class="page-heading"><div><h1>Scan history</h1><p>Recent runs and their recorded outcomes.</p></div></div>
+<div class="page-heading"><div><h1>Scan history</h1><p>Recent runs and their recorded outcomes. Partial means some checks could not finish; successful coin results and dealer leads are still saved.</p></div></div>
 {% if runs %}<div class="table-wrap"><table><thead><tr><th>Started</th><th>Type</th><th>Status</th><th>Finished</th><th>Details</th></tr></thead><tbody>{% for run in runs %}<tr><td>{{ run.started_at|local_time(settings.timezone) }}</td><td>{{ {'manual-coins': 'manual · Coins', 'manual-dealers': 'manual · Find dealers', 'manual-both': 'manual · Coins and dealers', 'scheduled': 'Daily · Coins and dealers'}.get(run.kind, run.kind|default('—', true)) }}{% if run.mode %}<br><span class="muted">{{ {'coins': 'Coins', 'dealers': 'Find dealers', 'both': 'Coins and dealers'}.get(run.mode, run.mode) }}</span>{% endif %}</td><td>{{ run.status|default('—', true) }}</td><td>{{ run.finished_at|local_time(settings.timezone) }}</td><td>{{ run.summary|default('—', true) }}</td></tr>{% endfor %}</tbody></table></div>{% else %}<div class="empty-state"><h2>No scans recorded</h2><p>Use Scan coins to establish the first stock baseline, or Find dealers to look for more shops.</p></div>{% endif %}
 {% endblock %}

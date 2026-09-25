@@ -364,14 +364,20 @@ class Database:
             domains.update(json.loads(supplied.read_text(encoding='utf-8-sig')))
         return domains | {urlsplit(u).hostname.removeprefix('www.').lower() for u in urls}
 
-    def save_candidate(self, candidate):
+    def save_candidate(self, candidate, *, run_id=None):
         url = public_url_shape(candidate['url'])
         domain = urlsplit(url).hostname.removeprefix('www.').lower()
         with self.connect() as c:
+            if run_id is not None:
+                c.execute('BEGIN IMMEDIATE')
+                cutoff = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat(timespec='seconds')
+                if not c.execute("SELECT 1 FROM runs WHERE id=? AND status='running' AND heartbeat>=?", (run_id, cutoff)).fetchone():
+                    return False
             c.execute('''INSERT INTO candidates(domain,name,url,evidence_url,discovered_from,reason,created_at) VALUES(?,?,?,?,?,?,?)
                       ON CONFLICT(domain) DO UPDATE SET evidence_url=excluded.evidence_url,reason=excluded.reason
                       WHERE candidates.status='pending' AND excluded.evidence_url<>'' ''',
                       (domain, candidate.get('name') or domain, url, candidate.get('evidence_url', ''), candidate.get('discovered_from', ''), candidate.get('reason', ''), utcnow()))
+        return True
 
     def list_candidates(self, status='pending'):
         with self.connect() as c:

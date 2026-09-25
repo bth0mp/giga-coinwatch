@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Discoveries{% endblock %}
 {% block content %}
-<div class="page-heading"><div><h1>Discoveries</h1><p>Dealer leads found in public directories. Review the evidence before adding one to your registry.</p></div></div>
+<div class="page-heading"><div><h1>Discoveries</h1><p>Dealer leads from public directories and Tavily web search when configured. Review the evidence before adding one to your registry.</p></div></div>
 {% if candidates %}<div class="discovery-list">{% for candidate in candidates %}
   <article class="discovery-row">
     <div><h2>{{ candidate.name or candidate.domain }}</h2><p class="discovery-domain">{{ candidate.domain }}</p><p>{{ candidate.reason }}</p><p class="muted">Found via {{ candidate.discovered_from }} · {{ candidate.created_at|local_time(settings.timezone) }}</p>

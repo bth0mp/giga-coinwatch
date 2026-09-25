@@ -150,3 +150,34 @@ def test_missing_key_and_empty_query_fail_before_network(monkeypatch):
         web_search.search_web('test coin', '')
     with pytest.raises(web_search.WebSearchError, match='query'):
         web_search.search_web('  ', 'tvly-test-key')
+
+
+def test_excluded_domains_are_lowercased_and_deduplicated(monkeypatch):
+    bodies = []
+    def respond(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={'results': []})
+    mock_api(monkeypatch, respond)
+    assert web_search.search_web('ancient coin shops', 'tvly-test-key',
+                                 exclude_domains=['Shop.Example', 'shop.example', 'other.example']) == []
+    assert bodies[0]['exclude_domains'] == ['shop.example', 'other.example']
+    web_search.search_web('ancient coin shops', 'tvly-test-key')
+    assert 'exclude_domains' not in bodies[1]
+    web_search.search_web('ancient coin shops', 'tvly-test-key', exclude_domains=[])
+    assert bodies[2]['exclude_domains'] == []
+
+
+@pytest.mark.parametrize('domains', [
+    'example.com', [None], ['https://example.com'], ['example.com/path'],
+    ['user@example.com'], ['example.com:443'], ['example.com?query=yes'],
+    ['example.com#fragment'], ['example.com\n'], ['localhost'], ['shop.local'],
+    ['127.0.0.1'], ['192.168.1.1'], ['*.example.com'], ['-bad.example'],
+    ['bad-.example'], ['bad..example'], ['x' * 64 + '.example'],
+    [f'shop{i}.example' for i in range(151)],
+])
+def test_invalid_exclusion_domains_fail_before_network(monkeypatch, domains):
+    def forbidden(**kwargs):
+        pytest.fail('Invalid exclusions must not spend a search request')
+    monkeypatch.setattr(web_search.httpx, 'Client', forbidden)
+    with pytest.raises(web_search.WebSearchError, match='domain'):
+        web_search.search_web('ancient coin shops', 'tvly-test-key', exclude_domains=domains)

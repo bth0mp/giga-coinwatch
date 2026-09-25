@@ -1,4 +1,4 @@
-"""Bounded dealer leads from public directories with shop-page evidence."""
+"""Bounded dealer leads from web search and public directories, with shop evidence."""
 
 from __future__ import annotations
 
@@ -11,9 +11,16 @@ from bs4 import BeautifulSoup
 
 DIRECTORIES = (
     "http://augustuscoins.com/ed/dealers.html#fixed",
-    "https://iapn-coins.org/members",
-    "https://artemis-collection.com/dealer-search/",
-    "https://www.vcoins.com/en/stores/ancient/default.aspx",
+)
+
+# Rotate through different stock categories so later scans explore beyond the same results.
+DEALER_QUERIES = (
+    'ancient coins fixed price dealers online shop -auction -auctions',
+    'Greek Roman coins for sale independent coin dealer shop -auction -auctions',
+    'Byzantine coins for sale fixed price coin shop -auction -auctions',
+    'Greek tetradrachm drachm ancient coins dealer buy online -auction -auctions',
+    'Roman denarius sestertius coins for sale dealer shop -auction -auctions',
+    'Celtic ancient coins for sale fixed price dealer -auction -auctions',
 )
 
 _PRICE = re.compile(r"(?:£|€|\$)\s*\d[\d,.]*")
@@ -23,6 +30,9 @@ _BUY = re.compile(r"\b(add to cart|add to basket|buy now|in stock|view item|purc
 _AUCTION = re.compile(r"\b(auction|place bid|current bid|starting bid|bid now)\b", re.I)
 _BAD_PATH = re.compile(r"/(?:cart|checkout|account|login|auction|auctions|forum|wiki|reference|archive)(?:/|$)", re.I)
 _SHOP_LINK = re.compile(r"(ancient|roman|greek|coin|shop|store|catalog|inventory|product)", re.I)
+_DEALER = re.compile(r"\b(dealers?|shop|store|for sale|buy|fixed.price|add to cart|in stock)\b", re.I)
+_NON_DEALERS = {'facebook.com', 'instagram.com', 'youtube.com', 'reddit.com', 'pinterest.com',
+                'x.com', 'twitter.com', 'tiktok.com', 'wikipedia.org'}
 
 
 class DiscoveryError(Exception):
@@ -123,6 +133,67 @@ def _inspect(fetcher, url: str):
     return None, None
 
 
+def _candidate(fetcher, url, name, origin, failures):
+    evidence = None
+    try:
+        evidence, redirected = _inspect(fetcher, url)
+    except Exception as exc:
+        failures.append({'url': url, 'error': str(exc)})
+        reason = f'Inaccessible during inspection: {exc}'
+    else:
+        if redirected:
+            reason = f'Unclear: dealer link redirects to another domain ({_domain(redirected)}).'
+        else:
+            reason = ('Public page shows ancient coin stock with a fixed-price purchase control.'
+                      if evidence else 'Unclear: inspected public pages did not confirm available fixed-price ancient coins.')
+    return {'domain': _domain(url), 'url': url, 'name': name[:160],
+            'evidence_url': evidence or '', 'discovered_from': origin, 'reason': reason}
+
+
+def discover_web(fetcher, known_domains, api_key, *, query_index=0, limit=10):
+    """Run at most two basic queries; inspect at most ten new dealer domains."""
+    from .web_search import WebSearchError, search_web
+
+    limit = max(0, min(limit, 10))
+    if not limit:
+        return []
+    known = {domain for value in known_domains if (domain := _domain('https://' + value))}
+    excluded = sorted(known)
+    candidates, failures, examined = [], [], set()
+    stop = getattr(fetcher, 'stop_event', None)
+    for offset in range(2):
+        if (stop and stop.is_set()) or len(examined) >= limit:
+            break
+        query = DEALER_QUERIES[(query_index + offset) % len(DEALER_QUERIES)]
+        origin = 'Tavily: ' + query
+        start = ((query_index + offset) * 150) % max(1, len(excluded))
+        batch = (excluded[start:] + excluded[:start])[:150]
+        try:
+            results = search_web(query, api_key, max_results=20, exclude_domains=batch)
+        except WebSearchError as exc:
+            failures.append({'url': origin, 'error': str(exc)})
+            continue
+        except Exception:
+            # Never expose arbitrary transport errors that may include credentials.
+            failures.append({'url': origin, 'error': 'Web dealer search failed. Please try again later.'})
+            continue
+        for result in results:
+            if (stop and stop.is_set()) or len(examined) >= limit:
+                break
+            url = result['url']
+            domain = _domain(url)
+            text = result['title'] + ' ' + result.get('snippet', '') + ' ' + url
+            if (not domain or domain in examined or any(domain == old or domain.endswith('.' + old) for old in known | _NON_DEALERS)
+                    or _BAD_PATH.search(urlsplit(url).path)
+                    or not (_ANCIENT.search(text) and _COIN.search(text) and _DEALER.search(text))):
+                continue
+            examined.add(domain)
+            candidates.append(_candidate(fetcher, url, domain, origin, failures))
+    if failures:
+        raise DiscoveryError(candidates, failures)
+    return candidates
+
+
 def discover(fetcher, known_domains: set[str], limit: int = 20) -> list[dict]:
     """Return up to ``limit`` evidence-backed leads; expose all fetch failures.
 
@@ -149,24 +220,7 @@ def discover(fetcher, known_domains: set[str], limit: int = 20) -> list[dict]:
             if domain in known or domain in examined or len(examined) >= limit:
                 continue
             examined.add(domain)
-            evidence = None
-            redirected = None
-            try:
-                evidence, redirected = _inspect(fetcher, url)
-            except Exception as exc:
-                failures.append({"url": url, "error": str(exc)})
-                reason = f"Inaccessible during inspection: {exc}"
-            else:
-                if redirected:
-                    reason = f"Unclear: dealer link redirects to another domain ({_domain(redirected)})."
-                else:
-                    reason = ("Public page shows ancient coin stock with a fixed-price purchase control."
-                              if evidence else "Unclear: inspected public pages did not confirm available fixed-price ancient coins.")
-            candidates.append({
-                "domain": domain, "url": url, "name": name[:160],
-                "evidence_url": evidence or "", "discovered_from": directory,
-                "reason": reason,
-            })
+            candidates.append(_candidate(fetcher, url, name, directory, failures))
         if len(examined) >= limit:
             break
     if failures:

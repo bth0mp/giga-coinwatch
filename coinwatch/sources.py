@@ -167,6 +167,8 @@ def _historynumis(card, base):
 
 def _shanna(card, base):
     title = card.select_one(".ProductList-title")
+    if not _text(title):
+        raise ValueError(f"product {card.get('data-item-id') or '(no ID)'}: missing title")
     if _reject(_text(title)):
         return None
     status = "sold" if "sold-out" in card.get("class", []) else "available"
@@ -272,6 +274,7 @@ def scrape_source(source: dict, fetcher) -> ScrapeResult:
     pages = 0
     last_page = 1
     seen_ids: set[str] = set()
+    card_errors: list[str] = []
     for number in range(1, MAX_PAGES + 1):
         url = _page_url(base, number, adapter)
         try:
@@ -291,7 +294,10 @@ def scrape_source(source: dict, fetcher) -> ScrapeResult:
             try:
                 item = parser(card, page.url)
             except ValueError as exc:
-                return ScrapeResult(listings, pages, False, f"{url}: {exc}")
+                # One broken card must not hide valid stock later in the catalog.
+                # Retain the error so this sweep cannot replace a complete baseline.
+                card_errors.append(f"{url}: {exc}")
+                continue
             if item and item.external_id not in seen_ids:
                 if adapter == "mrb":
                     try:
@@ -304,5 +310,10 @@ def scrape_source(source: dict, fetcher) -> ScrapeResult:
         if number == 1:
             last_page = _page_count(soup, adapter)
         if number >= last_page:
+            if card_errors:
+                details = "; ".join(card_errors[:3])
+                if len(card_errors) > 3:
+                    details += f"; and {len(card_errors) - 3} more"
+                return ScrapeResult(listings, pages, False, f"{len(card_errors)} unreadable product cards: {details}")
             return ScrapeResult(listings, pages)
     return ScrapeResult(listings, pages, False, f"catalog exceeds {MAX_PAGES}-page safety limit")
