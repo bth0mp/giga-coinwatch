@@ -176,6 +176,7 @@ def create_app(db, runtime) -> FastAPI:
         except ValueError:
             raise HTTPException(status_code=404, detail="Wanted search not found") from None
 
+    @app.get("/search")
     @app.get("/wanted")
     def wanted(request: Request):
         return templates.TemplateResponse(request, "wanted.html", context(
@@ -254,6 +255,10 @@ def create_app(db, runtime) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return _scan_redirect(f"/wanted/{search_id}", started)
+
+    @app.post("/search/scan")
+    def search_scan(search_id: int = Form(...), csrf_token: str = Form(""), web_queries: str = Form("1")):
+        return wanted_scan(search_id, csrf_token, web_queries)
 
     @app.get("/discoveries")
     def discoveries(request: Request):

@@ -7,14 +7,31 @@
 
   const queryCount = document.querySelector('[data-web-query-count]');
   const queryEstimate = document.querySelector('[data-web-query-estimate]');
+  const searchSelect = document.querySelector('[data-search-select]');
+  const criteriaLink = document.querySelector('[data-search-criteria-link]');
   if (queryCount && queryEstimate) {
     const updateEstimate = () => {
+      if (searchSelect) {
+        const selected = searchSelect.selectedOptions[0];
+        queryCount.disabled = !selected?.value || selected.dataset.includeWeb !== 'true';
+        if (criteriaLink) {
+          criteriaLink.hidden = !selected?.value;
+          criteriaLink.href = selected?.dataset.editUrl || '#new-search-heading';
+        }
+        if (queryCount.disabled) {
+          queryEstimate.textContent = selected?.value
+            ? 'Wider-web checking is off for this search. Search now refreshes monitored stock only. Enable the wider web when editing this search.'
+            : 'Create a search below to choose what to look for.';
+          return;
+        }
+      }
       const count = Number(queryCount.value);
       queryEstimate.textContent = Number.isInteger(count) && count >= 1 && count <= 50
         ? `Estimate: up to ${count} basic Tavily ${count === 1 ? 'credit' : 'credits'} and ${count * 20} results before duplicates.`
         : 'Choose a whole number from 1 to 50.';
     };
     queryCount.addEventListener('input', updateEstimate);
+    searchSelect?.addEventListener('change', updateEstimate);
     updateEstimate();
   }
 
@@ -65,7 +82,9 @@
       if (!response.ok) return;
       const status = await response.json();
       const running = status.running === true;
-      buttons.forEach((button) => { button.disabled = running; });
+      buttons.forEach((button) => {
+        button.disabled = running || (button.hasAttribute('data-requires-search') && !searchSelect?.value);
+      });
       light.classList.toggle('busy', running);
       const mode = { coins: 'Scanning coins', dealers: 'Finding dealers', both: 'Scanning coins and dealers' }[status.mode] || 'Scanning';
       const progress = (status.phase || '').startsWith('Searching the wider web')

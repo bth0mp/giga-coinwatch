@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}{{ search.name }}{% endblock %}
 {% block content %}
-<div class="page-heading"><div><a class="text-link back-link" href="/wanted">All wanted searches</a><h1>{{ search.name }}</h1><p>{{ 'Included in daily coin scans.' if search.enabled else 'Daily checking is paused for this search.' }}</p></div>
+<div class="page-heading"><div><a class="text-link back-link" href="/search">Back to Search</a><h1>{{ search.name }}</h1><p>{{ 'Included in daily coin scans.' if search.enabled else 'Daily checking is paused for this search.' }}</p></div>
   <form class="wanted-scan-form" action="/wanted/{{ search.id }}/scan" method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="wanted-scan-inputs"><label><span>Web queries</span><input type="number" name="web_queries" min="1" max="50" step="1" value="5" required data-web-query-count aria-describedby="web-query-help" {% if not search.include_web %}disabled{% endif %}></label><button class="button button-primary" data-scan-button type="submit" {% if runtime.running %}disabled{% endif %}>Scan for this search</button></div>

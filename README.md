@@ -16,9 +16,11 @@ The bundled registry contains 81 dealer/storefront entries, including additional
 
 Choose **one** running mode for a collection database. Both modes serve the dashboard at <http://127.0.0.1:8000/> and run the daily schedule inside giga-coinwatch. Keep the PC awake for scheduled scans.
 
-## Wanted coins and scan controls
+## Search and scan controls
 
-Open **Wanted coins** to save a search by coin type, mint, ruler, keywords, exclusions, category, currency and maximum price. For example, enter `denarius` as the type, `Rome` as the mint, and `Hadrian` as the ruler. All entered words must occur in the seller's title or category. Put a phrase in double quotes to keep its words together; any excluded word or phrase rejects a local match. Matching ignores case and accents, but does not infer attributes, translate mint names, or expand synonyms. A price limit requires a currency; no exchange-rate conversion is performed.
+Open the **Search** tab, select a saved search, enter **1–50 Web queries**, then click **Search now**. The estimated Tavily credit usage updates beside the control. Results open on that search's detail page. The older `/wanted` address still works.
+
+Use **New saved search** on the same page to enter a coin type, mint, ruler, keywords, exclusions, category, currency and maximum price. For example, enter `denarius` as the type, `Rome` as the mint, and `Hadrian` as the ruler. All entered words must occur in the seller's title or category. Put a phrase in double quotes to keep its words together; any excluded word or phrase rejects a local match. Matching ignores case and accents, but does not infer attributes, translate mint names, or expand synonyms. A price limit requires a currency; no exchange-rate conversion is performed.
 
 Matches include available coins from the initial inventory and subsequent scans, with a link to the seller and the last observed price. These are seller-text matches, not verified coin attributions. Pausing a wanted search stops its automatic web queries; the saved local match view stays usable. Editing the criteria clears old web leads for that search. Deleting a search leaves catalog and saved coins intact.
 

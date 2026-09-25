@@ -239,6 +239,43 @@ def test_wanted_scan_accepts_custom_query_count_and_rejects_invalid_budgets(tmp_
     assert client.post(f"/wanted/{search_id}/scan", data={"web_queries": "17"}).status_code == 403
 
 
+def test_search_tab_runs_selected_watch_with_chosen_budget(tmp_path):
+    from bs4 import BeautifulSoup
+
+    client, db, runtime = setup_catalog(tmp_path)
+    db.save_search({"name": "Athens", "mint": "Athens", "include_web": True})
+    selected = db.save_search({"name": "Boiotian", "keywords": "Boiotian", "include_web": True})
+    response = client.get("/search")
+    assert response.status_code == 200
+    page = BeautifulSoup(response.text, "html.parser")
+    assert page.select_one('nav a[href="/search"]').get("aria-current") == "page"
+    form = page.select_one('form[action="/search/scan"]')
+    assert form.select_one(f'select[name="search_id"] option[value="{selected}"]')
+    assert form.select_one('input[name="web_queries"]').get("max") == "50"
+    response = client.post("/search/scan", data={**token(db), "search_id": selected, "web_queries": "17"})
+    assert response.status_code == 303
+    assert response.headers["location"] == f"/wanted/{selected}?scan=started"
+    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": selected, "web_queries": 17}
+    runtime.scan_request = None
+    assert client.post("/search/scan", data={"search_id": selected, "web_queries": "17"}).status_code == 403
+    assert client.post("/search/scan", data={**token(db), "search_id": selected, "web_queries": "51"}).status_code == 400
+    assert client.post("/search/scan", data={**token(db), "search_id": 9999, "web_queries": "5"}).status_code == 404
+    assert runtime.scan_request is None
+
+
+def test_search_tab_without_saved_searches_does_not_offer_empty_scan(tmp_path):
+    from bs4 import BeautifulSoup
+
+    client, _, runtime = setup_catalog(tmp_path)
+    response = client.get("/search")
+    assert response.status_code == 200
+    page = BeautifulSoup(response.text, "html.parser")
+    form = page.select_one('form[action="/search/scan"]')
+    assert form is None or form.select_one('button[type="submit"]').has_attr("disabled")
+    assert page.select_one('form[action="/wanted"] input[name="mint"]')
+    assert runtime.scan_request is None
+
+
 def test_wanted_scan_disables_web_budget_when_web_search_is_off(tmp_path):
     client, db, runtime = setup_catalog(tmp_path)
     search_id = db.save_search({"name": "Athens", "mint": "Athens", "include_web": False})
