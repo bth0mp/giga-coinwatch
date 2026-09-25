@@ -245,7 +245,7 @@ def create_app(db, runtime) -> FastAPI:
         return RedirectResponse("/search", status_code=303)
 
     @app.post("/wanted/{search_id}/scan")
-    def wanted_scan(search_id: int, csrf_token: str = Form(""), web_queries: str = Form("1")):
+    def wanted_scan(search_id: int, csrf_token: str = Form(""), web_queries: str = Form("1"), web_minutes: str = Form("10")):
         require_csrf(csrf_token)
         search = find_search(search_id)
         try:
@@ -254,17 +254,25 @@ def create_app(db, runtime) -> FastAPI:
                 raise ValueError
         except ValueError:
             raise HTTPException(status_code=400, detail="Choose a whole number of web queries from 1 to 50") from None
+        try:
+            minutes = int(web_minutes)
+            if not 1 <= minutes <= 120:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Choose a whole number of web check minutes from 1 to 120") from None
         if count > 1 and not search["include_web"]:
             raise HTTPException(status_code=400, detail="Enable wider-web checking under Edit search before choosing multiple web queries")
+        if minutes != 10 and not search["include_web"]:
+            raise HTTPException(status_code=400, detail="Enable wider-web checking under Edit search before choosing a web check time")
         try:
-            started = runtime.start_scan(mode="coins", search_id=search_id, web_queries=count)
+            started = runtime.start_scan(mode="coins", search_id=search_id, web_queries=count, web_minutes=minutes)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return _scan_redirect(f"/wanted/{search_id}", started)
 
     @app.post("/search/scan")
-    def search_scan(search_id: int = Form(...), csrf_token: str = Form(""), web_queries: str = Form("1")):
-        return wanted_scan(search_id, csrf_token, web_queries)
+    def search_scan(search_id: int = Form(...), csrf_token: str = Form(""), web_queries: str = Form("1"), web_minutes: str = Form("10")):
+        return wanted_scan(search_id, csrf_token, web_queries, web_minutes)
 
     @app.get("/discoveries")
     def discoveries(request: Request):

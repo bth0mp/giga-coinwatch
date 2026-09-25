@@ -63,6 +63,7 @@ def main():
     scan.add_argument('--source', action='append')
     scan.add_argument('--search-id', type=int, help='Run a saved wanted search by its positive ID')
     scan.add_argument('--web-queries', type=int, default=1, help='Web queries for one wanted search, from 1 to 50 (default: 1)')
+    scan.add_argument('--web-minutes', type=int, default=10, help='Web search and sale-check time limit, from 1 to 120 minutes (default: 10)')
     commands.add_parser('status')
     commands.add_parser('backup').add_argument('destination', type=Path)
     commands.add_parser('restore').add_argument('source', type=Path)
@@ -79,6 +80,10 @@ def main():
             parser.error('--web-queries must be between 1 and 50')
         if args.web_queries > 1 and args.search_id is None:
             parser.error('--web-queries above 1 requires --search-id')
+        if not 1 <= args.web_minutes <= 120:
+            parser.error('--web-minutes must be between 1 and 120')
+        if args.web_minutes != 10 and args.search_id is None:
+            parser.error('--web-minutes other than 10 requires --search-id')
     directory = data_directory(args.data_dir)
     directory.mkdir(parents=True, exist_ok=True)
     configure_logging(directory)
@@ -115,7 +120,7 @@ def main():
         elif args.command == 'scan':
             from .scanner import Scanner
             with InstanceLock(directory):
-                result = Scanner(db).run(source_ids=args.source, include_discovery=not args.no_discovery, mode=args.mode, search_id=args.search_id, web_queries=args.web_queries)
+                result = Scanner(db).run(source_ids=args.source, include_discovery=not args.no_discovery, mode=args.mode, search_id=args.search_id, web_queries=args.web_queries, web_minutes=args.web_minutes)
             print(json.dumps(result, indent=2))
             return 1 if result['status'] in ('failed','busy') else 0
         else:

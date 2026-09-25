@@ -33,6 +33,13 @@ def validate_web_queries(web_queries, kind, selected_search):
         raise ValueError('Multiple web queries require a manual scan of one wanted search with wider-web search enabled.')
 
 
+def validate_web_minutes(web_minutes, kind, selected_search):
+    if type(web_minutes) is not int or not 1 <= web_minutes <= 120:
+        raise ValueError('Choose between 1 and 120 web minutes.')
+    if web_minutes != 10 and (kind != 'manual' or not selected_search or not selected_search['include_web']):
+        raise ValueError('A custom web time limit requires a manual scan of one wanted search with wider-web search enabled.')
+
+
 class Scanner:
     def __init__(self, db, scrape=None, progress=None, stop_event=None):
         self.db = db
@@ -41,7 +48,7 @@ class Scanner:
         self.stop_event = stop_event or threading.Event()
         self.run_id = None
 
-    def _scan_web(self, searches, errors, notes, query_limit=1):
+    def _scan_web(self, searches, errors, notes, query_limit=1, web_minutes=10):
         from .sale_checks import verify_sale
         from .searches import web_query_variants
         from .web_search import WebSearchError, load_api_key, search_web
@@ -57,10 +64,10 @@ class Scanner:
             notes.append('New wider-web queries skipped: configure a Tavily API key in Settings to enable them. Retained listings can still be checked.')
         if len(searches) > 5:
             notes.append(f'Wider web search is limited to five wanted searches per scan; {len(searches) - 5} remain for a later scan.')
-        sale_fetcher = Fetcher(stop_event=self.stop_event, budget=600)
+        sale_fetcher = Fetcher(stop_event=self.stop_event, budget=web_minutes * 60)
         cache, stored, changed = {}, {}, set()
         queries, budget_reached = 0, False
-        budget_message = 'Wanted-sale verification reached its 600-second budget; remaining wanted-search queries and page checks were skipped.'
+        budget_message = f'Wanted-sale verification reached its {web_minutes}-minute budget; remaining wanted-search queries and page checks were skipped.'
 
         def can_work(search):
             if self.stop_event.is_set() or not self.db.renew_lease(self.run_id):
@@ -230,10 +237,11 @@ class Scanner:
                     errors.append(f'Candidate skipped: {exc}')
         return count
 
-    def run(self, kind='manual', source_ids=None, include_discovery=True, mode='both', search_id=None, web_queries=1):
+    def run(self, kind='manual', source_ids=None, include_discovery=True, mode='both', search_id=None, web_queries=1, web_minutes=10):
         mode = normalize_scan_mode(mode, include_discovery)
         selected_search = get_scan_search(self.db, mode, search_id)
         validate_web_queries(web_queries, kind, selected_search)
+        validate_web_minutes(web_minutes, kind, selected_search)
         query_limit = web_queries
         run_kind = f'manual-{mode}' if kind == 'manual' else kind
         run_id = self.db.claim_run(run_kind)
@@ -278,7 +286,7 @@ class Scanner:
                     errors.append(f"{source['name']}: {e}")
             if mode in ('coins', 'both') and not self.stop_event.is_set():
                 searches = [selected_search] if selected_search else self.db.list_searches(enabled_only=True)
-                web_queries, web_leads = self._scan_web(searches, errors, notes, query_limit=query_limit)
+                web_queries, web_leads = self._scan_web(searches, errors, notes, query_limit=query_limit, web_minutes=web_minutes)
                 if selected_search:
                     try:
                         current_search = self.db.get_search(selected_search['id'])

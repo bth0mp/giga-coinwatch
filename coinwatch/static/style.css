@@ -47,7 +47,7 @@ a.button { display: inline-block; text-decoration: none; }
 .wanted-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(330px, .75fr); align-items: start; gap: 28px; }
 .search-launch { margin-bottom: 28px; }
 .search-launch > p { max-width: 850px; color: var(--muted); font-size: 13px; }
-.search-launch-form { display: grid; grid-template-columns: minmax(180px, 1fr) 125px auto; align-items: end; gap: 12px; max-width: 850px; }
+.search-launch-form { display: grid; grid-template-columns: minmax(180px, 1fr) 110px 190px auto; align-items: end; gap: 12px; max-width: 1000px; }
 .search-launch-form label { min-width: 0; }
 .search-launch-help { grid-column: 1 / -1; }
 .search-launch-links { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 16px; font-size: 13px; }
@@ -71,10 +71,12 @@ a.button { display: inline-block; text-decoration: none; }
 .checkbox-label span { font-weight: normal; }
 .back-link { display: inline-block; margin-bottom: 12px; font-size: 13px; }
 .wanted-scan-form { width: min(100%, 365px); flex: 0 0 auto; }
-.wanted-scan-inputs { display: flex; align-items: end; gap: 12px; margin-bottom: 8px; }
-.wanted-scan-inputs label { flex: 1; min-width: 75px; }
+.wanted-scan-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; gap: 12px; margin-bottom: 8px; }
+.wanted-scan-inputs label { min-width: 0; }
+.wanted-scan-inputs .button { grid-column: 1 / -1; }
 .wanted-scan-inputs input { width: 100%; }
 .wanted-scan-form .form-help { font-size: 12px; }
+.wanted-scan-form .form-help + .form-help { margin-top: 6px; }
 .search-edit { margin-bottom: 28px; }
 .search-edit > summary { font-weight: 600; cursor: pointer; }
 .search-edit[open] > summary { margin-bottom: 20px; }
@@ -190,6 +192,8 @@ td { font-size: 13px; }
   .inline-form { margin-top: 18px; }
 }
 @media (max-width: 760px) {
+  .search-launch-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .search-launch-form .saved-search-select, .search-launch-form > .button { grid-column: 1 / -1; }
   .scan-toolbar { align-items: flex-start; flex-direction: column; gap: 10px; }
   .wanted-layout { grid-template-columns: 1fr; }
   .wanted-editor { margin-top: 3px; }
@@ -215,8 +219,6 @@ td { font-size: 13px; }
   .decision-actions { flex-wrap: wrap; }
 }
 @media (max-width: 520px) {
-  .search-launch-form { grid-template-columns: minmax(0, 1fr) auto; }
-  .search-launch-form .saved-search-select { grid-column: 1 / -1; }
   .scan-controls { width: 100%; gap: 6px; }
   .scan-controls .button { flex: 1; padding-inline: 8px; font-size: 12px; }
   .wanted-row { padding: 16px; }

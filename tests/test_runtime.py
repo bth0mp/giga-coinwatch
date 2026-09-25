@@ -450,11 +450,12 @@ def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     runtime = Runtime(db)
     try:
-        assert runtime.start_scan(mode='coins', search_id=watch, web_queries=3)
+        assert runtime.start_scan(mode='coins', search_id=watch, web_queries=3, web_minutes=30)
         assert entered.wait(5)
         snapshot = runtime.snapshot()
         assert snapshot['search_id'] == watch
         assert snapshot['web_queries'] == 3
+        assert snapshot['web_minutes'] == 30
         assert 'results' not in snapshot
         assert not runtime.start_scan(mode='both')
     finally:
@@ -464,6 +465,7 @@ def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(
         runtime.stop()
     assert runtime.snapshot()['search_id'] is None
     assert runtime.snapshot()['web_queries'] == 0
+    assert runtime.snapshot()['web_minutes'] == 0
     assert runtime.search_results(watch)['results'][0]['title'] == 'Owl coin'
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
     assert runtime.search_results(watch)['status'] == 'complete'
@@ -573,6 +575,97 @@ def test_multiple_web_queries_require_a_manual_selected_opted_in_watch(tmp_path,
     with pytest.raises(ValueError):
         Scanner(db).run(mode='coins', web_queries=2, **options)
     assert db.runs() == []
+
+
+@pytest.mark.parametrize('minutes', [0, 121, -1, True, 1.5, '20'])
+def test_web_minutes_must_be_an_integer_between_one_and_120_before_start(tmp_path, minutes):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    with pytest.raises(ValueError, match='minutes'):
+        Scanner(db).run(mode='coins', search_id=watch, web_minutes=minutes)
+    runtime = Runtime(db)
+    with pytest.raises(ValueError, match='minutes'):
+        runtime.start_scan(mode='coins', search_id=watch, web_minutes=minutes)
+    assert not runtime.snapshot()['running']
+    assert db.runs() == []
+
+
+@pytest.mark.parametrize('options,include_web', [({}, True), ({'kind':'scheduled'}, True), ({}, False)])
+def test_custom_web_minutes_require_a_manual_selected_opted_in_watch(tmp_path, options, include_web):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db, include_web=include_web)
+    options = dict(options)
+    if options or not include_web:
+        options['search_id'] = watch
+    with pytest.raises(ValueError, match='manual'):
+        Scanner(db).run(mode='coins', web_minutes=20, **options)
+    runtime = Runtime(db)
+    with pytest.raises(ValueError, match='manual'):
+        runtime.start_scan(mode='coins', web_minutes=20, **options)
+    assert not runtime.snapshot()['running']
+    assert db.runs() == []
+
+
+@pytest.mark.parametrize('minutes,seconds_per_sale,expected_queries,status', [
+    (1, 60, 1, 'partial'), (10, 600, 1, 'partial'), (20, 600, 2, 'partial'), (120, 600, 2, 'complete'),
+])
+def test_selected_web_minutes_control_paid_queries_and_preserve_checked_sales(tmp_path, monkeypatch, minutes, seconds_per_sale, expected_queries, status):
+    from types import SimpleNamespace
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    clock, queries = [0], []
+    monkeypatch.setattr('coinwatch.scanner.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr('coinwatch.scanner.Fetcher', lambda stop_event, budget=900:
+                        SimpleNamespace(deadline=clock[0] + budget, stop_event=stop_event))
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    def search(query, key, **kwargs):
+        queries.append(query)
+        return [dict(url=f'https://dealer.example/{len(queries)}', title='Greek coin')]
+    def verify(row, fetcher):
+        clock[0] += seconds_per_sale
+        return sale_result(row)
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=2, web_minutes=minutes)
+    assert result['status'] == status
+    assert result['web_queries'] == len(queries) == expected_queries
+    assert len(db.search_results(watch, verified_only=True)['results']) == expected_queries
+    if status == 'partial':
+        assert f'{minutes}-minute' in result['summary']
+
+
+def test_scheduled_web_phase_keeps_ten_minutes_and_independent_catalog_dealer_budgets(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([dict(id='shop', name='Shop', url='https://shop.example', adapter='test', enabled=True)])
+    wanted_search(db)
+    clock, phase_budgets = [0], {}
+    monkeypatch.setattr('coinwatch.scanner.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr('coinwatch.scanner.Fetcher', lambda stop_event, budget=900:
+                        SimpleNamespace(deadline=clock[0] + budget, stop_event=stop_event))
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [dict(url='https://dealer.example/coin', title='Greek coin')])
+    def scrape(source, fetcher):
+        phase_budgets['catalog'] = fetcher.deadline - clock[0]
+        clock[0] += 800
+        return ScrapeResult([], 1)
+    def verify(row, fetcher):
+        phase_budgets['web'] = fetcher.deadline - clock[0]
+        clock[0] += 500
+        return sale_result(row)
+    def dealers(self, fetcher, errors, notes):
+        phase_budgets['dealers'] = fetcher.deadline - clock[0]
+        return 0
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    monkeypatch.setattr(Scanner, '_scan_dealers', dealers)
+    result = Scanner(db, scrape=scrape).run(kind='scheduled')
+    assert result['status'] == 'complete'
+    assert phase_budgets == {'catalog': 900, 'web': 600, 'dealers': 900}
 
 
 def test_broad_scan_uses_distinct_queries_deduplicates_and_preserves_earlier_leads(tmp_path, monkeypatch):
@@ -815,7 +908,7 @@ def test_sale_verification_budget_stops_later_paid_queries_and_keeps_checked_pro
     assert result['web_queries'] == len(paid) == 1
     assert result['web_leads'] == 1
     assert len(db.search_results(watch, verified_only=True)['results']) == 1
-    assert '600-second' in result['summary']
+    assert '10-minute' in result['summary']
 
 
 @pytest.mark.parametrize('change', ['edit', 'delete', 'lease', 'stop'])

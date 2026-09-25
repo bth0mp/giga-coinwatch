@@ -6,6 +6,7 @@
   let wasRunning = document.body.dataset.scanRunning === 'true';
 
   const queryCount = document.querySelector('[data-web-query-count]');
+  const webMinutes = document.querySelector('[data-web-minutes]');
   const queryEstimate = document.querySelector('[data-web-query-estimate]');
   const searchSelect = document.querySelector('[data-search-select]');
   const criteriaLink = document.querySelector('[data-search-criteria-link]');
@@ -14,6 +15,7 @@
       if (searchSelect) {
         const selected = searchSelect.selectedOptions[0];
         queryCount.disabled = !selected?.value || selected.dataset.includeWeb !== 'true';
+        if (webMinutes) webMinutes.disabled = queryCount.disabled;
         if (criteriaLink) {
           criteriaLink.hidden = !selected?.value;
           criteriaLink.href = selected?.dataset.editUrl || '#new-search-heading';

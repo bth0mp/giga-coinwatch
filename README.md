@@ -18,7 +18,7 @@ Choose **one** running mode for a collection database. Both modes serve the dash
 
 ## Search and scan controls
 
-Open the **Search** tab, select a saved search, enter **1–50 Web queries**, then click **Search now**. The estimated Tavily credit usage updates beside the control. Results open on that search's detail page. The older `/wanted` address still works.
+Open the **Search** tab, select a saved search, enter **1–50 Web queries** and **1–120 Web check time (minutes)**, then click **Search now**. The time limit defaults to 10 minutes and covers web queries plus sale checks; monitored-dealer scanning has its own budget. The estimated Tavily credit usage updates beside the query control. Increasing the time limit does not increase your selected query or credit limit. Results open on that search's detail page. The older `/wanted` address still works.
 
 Use **New saved search** on the same page to enter a coin type, mint, ruler, keywords, exclusions, category, currency and maximum price. For example, enter `denarius` as the type, `Rome` as the mint, and `Hadrian` as the ruler. All entered words must occur in the seller's title or category. Put a phrase in double quotes to keep its words together; any excluded word or phrase rejects a local match. Matching ignores case and accents, but does not infer attributes, translate mint names, or expand synonyms. A price limit requires a currency; no exchange-rate conversion is performed.
 
@@ -29,7 +29,7 @@ To remove a saved search, choose **Delete** beside it on the **Search** page, or
 - **Scan coins** refreshes enabled, supported dealer stock and checks enabled wanted searches on the web when configured.
 - **Find dealers** searches Tavily when configured and checks the supported public directory for additional dealer candidates; it does not rescan coin inventory. Review leads under **Discoveries**. A newly accepted dealer still needs a validated parser before monitoring can be enabled.
 - **Scan both** does both jobs. The daily schedule uses this mode.
-- **Scan for this search** refreshes dealer stock and runs the selected wanted search on the web if opted in. Choose any whole number from **1–50 web queries** beside the button; the credit/result estimate updates before you start. It also works for a paused search as an explicit one-off check.
+- **Scan for this search** refreshes dealer stock and runs the selected wanted search on the web if opted in. Choose **1–50 web queries** and **1–120 minutes** beside the button; the credit/result estimate updates before you start. It also works for a paused search as an explicit one-off check. These per-run controls do not change daily scan limits.
 
 Only one scan runs at a time. A coin-only, dealer-only or targeted scan does not replace the next daily combined check.
 
@@ -45,7 +45,7 @@ Dealer discovery uses up to two additional basic queries per dealer/combined sca
 
 Tavily results are candidate links, not automatically accepted listings. The scanner opens each candidate through the normal public-URL and robots checks. Only an individual coin product with a positive fixed price, currency and purchase-availability evidence appears in **For sale on the wider web**. Articles, reference pages, social posts, category pages, auctions, sold stock and replicas are excluded. Blocked or unclear pages stay hidden. Product-page identity checks prevent a related product elsewhere on an article from qualifying the article as a listing.
 
-Displayed web listings show the seller's price and **Availability checked** time. Checks older than 24 hours are hidden until rechecked. Existing candidates are checked again during a scan, even without a Tavily key; those page checks use no Tavily credits. Sale verification has a ten-minute budget per web-scan phase; if it runs out, remaining wanted-search queries are skipped and the run reports partial coverage. Fewer listings than the candidate-link estimate is expected.
+Displayed web listings show the seller's price and **Availability checked** time. Checks older than 24 hours are hidden until rechecked. Existing candidates are checked again during a scan, even without a Tavily key; those page checks use no Tavily credits. The web phase has a ten-minute budget for daily and global scans. Manual searches for one saved search can use a chosen limit of 1–120 minutes (default 10). If the limit is reached, remaining wanted-search queries are skipped, checked results are kept, and the run reports partial coverage. Fewer listings than the candidate-link estimate is expected.
 
 Web candidates remain separate from the monitored-dealer catalog. Up to 1,000 candidate records are retained per wanted search, including hidden ones, with duplicate URLs combined. Merging new results does not refresh another listing's availability timestamp. Old unverified leads are hidden when upgrading, until they pass a product-page check. Successful checks survive partial failures. Changing the search criteria clears the previous criteria's records.
 
@@ -82,7 +82,7 @@ $dataDir = Join-Path $env:LOCALAPPDATA 'Coinwatch'
 
 Do not run a manual scan at the same time as another installation. giga-coinwatch uses a run lease to prevent overlapping scans within one database.
 
-CLI scans accept `scan --mode coins`, `scan --mode dealers`, or `scan --mode both` (the default). To refresh a wanted search, use `scan --mode coins --search-id 1 --web-queries 12`, replacing `1` with the ID in that search's dashboard URL and `12` with your chosen query budget. Omitting `--web-queries` uses one query. Budgets above one require a specific wanted search with wider-web checking enabled.
+CLI scans accept `scan --mode coins`, `scan --mode dealers`, or `scan --mode both` (the default). To refresh a wanted search, use `scan --mode coins --search-id 1 --web-queries 12 --web-minutes 30`, replacing `1` with the ID in that search's dashboard URL and the budgets with your choices. Omitting these flags uses one query and 10 minutes. Query counts above one or a custom time limit require a specific wanted search with wider-web checking enabled. `--web-minutes` accepts whole numbers from 1 to 120.
 
 ## Docker
 

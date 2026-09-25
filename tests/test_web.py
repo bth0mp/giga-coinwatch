@@ -24,9 +24,9 @@ class RuntimeStub:
     def stop(self):
         self.stopped = True
 
-    def start_scan(self, kind="manual", mode="both", search_id=None, web_queries=1):
+    def start_scan(self, kind="manual", mode="both", search_id=None, web_queries=1, web_minutes=10):
         self.scan_requested = True
-        self.scan_request = {"kind": kind, "mode": mode, "search_id": search_id, "web_queries": web_queries}
+        self.scan_request = {"kind": kind, "mode": mode, "search_id": search_id, "web_queries": web_queries, "web_minutes": web_minutes}
         return True
 
     def search_results(self, search_id):
@@ -146,7 +146,7 @@ def test_scan_modes_validate_scope_and_return_to_current_page(tmp_path):
         response = client.post("/scan", data={**token(db), "mode": mode, "return_to": "/discoveries"})
         assert response.status_code == 303
         assert response.headers["location"] == "/discoveries?scan=started"
-        assert runtime.scan_request == {"kind": "manual", "mode": mode, "search_id": None, "web_queries": 1}
+        assert runtime.scan_request == {"kind": "manual", "mode": mode, "search_id": None, "web_queries": 1, "web_minutes": 10}
     assert client.post("/scan", data={**token(db), "mode": "everything"}).status_code == 400
     response = client.post("/scan", data={**token(db), "mode": "coins", "return_to": "https://other.example"})
     assert response.headers["location"] == "/?scan=started"
@@ -168,7 +168,7 @@ def test_wanted_search_create_edit_match_and_scan(tmp_path):
     assert "My denarii" in client.get("/wanted").text
     response = client.post(f"/wanted/{search['id']}/scan", data=token(db))
     assert response.status_code == 303
-    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": search["id"], "web_queries": 1}
+    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": search["id"], "web_queries": 1, "web_minutes": 10}
     response = client.post(f"/wanted/{search['id']}", data={**token(db), "name": "Lower budget", "coin_type": "denarius",
                                                          "currency": "GBP", "max_price": "40", "enabled": "true"})
     assert response.status_code == 303
@@ -292,7 +292,7 @@ def test_search_tab_runs_selected_watch_with_chosen_budget(tmp_path):
     response = client.post("/search/scan", data={**token(db), "search_id": selected, "web_queries": "17"})
     assert response.status_code == 303
     assert response.headers["location"] == f"/wanted/{selected}?scan=started"
-    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": selected, "web_queries": 17}
+    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": selected, "web_queries": 17, "web_minutes": 10}
     runtime.scan_request = None
     assert client.post("/search/scan", data={"search_id": selected, "web_queries": "17"}).status_code == 403
     assert client.post("/search/scan", data={**token(db), "search_id": selected, "web_queries": "51"}).status_code == 400
@@ -319,10 +319,36 @@ def test_wanted_scan_disables_web_budget_when_web_search_is_off(tmp_path):
     from bs4 import BeautifulSoup
     document = BeautifulSoup(client.get(f"/wanted/{search_id}").text, "html.parser")
     assert document.select_one('input[name="web_queries"]').has_attr("disabled")
+    assert document.select_one('input[name="web_minutes"]').has_attr("disabled")
     response = client.post(f"/wanted/{search_id}/scan", data={**token(db), "web_queries": "5"})
     assert response.status_code == 400
     assert runtime.scan_requested is False
+    assert client.post(f"/wanted/{search_id}/scan", data={**token(db), "web_minutes": "30"}).status_code == 400
     assert client.post(f"/wanted/{search_id}/scan", data=token(db)).status_code == 303
+
+
+def test_manual_search_time_control_reaches_worker_without_increasing_query_limit(tmp_path):
+    from bs4 import BeautifulSoup
+    client, db, runtime = setup_catalog(tmp_path)
+    search_id = db.save_search({"name": "Athens", "mint": "Athens", "include_web": True})
+    for page_url in ("/search", f"/wanted/{search_id}"):
+        document = BeautifulSoup(client.get(page_url).text, "html.parser")
+        control = document.select_one('input[name="web_minutes"]')
+        assert control is not None
+        assert (control["min"], control["max"], control["value"]) == ("1", "120", "10")
+    for endpoint in ("/search/scan", f"/wanted/{search_id}/scan"):
+        for minutes in (1, 30, 120):
+            response = client.post(endpoint, data={**token(db), "search_id": search_id,
+                                                   "web_queries": "3", "web_minutes": str(minutes)})
+            assert response.status_code == 303
+            assert runtime.scan_request["web_minutes"] == minutes
+            assert runtime.scan_request["web_queries"] == 3
+        runtime.scan_request = None
+        for invalid in ("0", "121", "-1", "1.5", "unlimited"):
+            response = client.post(endpoint, data={**token(db), "search_id": search_id, "web_minutes": invalid})
+            assert response.status_code == 400
+            assert runtime.scan_request is None
+        assert client.post(endpoint, data={"search_id": search_id, "web_minutes": "30"}).status_code == 403
 
 
 def test_wanted_web_results_count_for_sale_domains_and_show_availability_check_dates(tmp_path):
