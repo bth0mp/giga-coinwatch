@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -14,6 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from .fetch import FetchError
+from .web_search import clear_api_key, provider_settings, save_api_key
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -49,6 +50,13 @@ def _return_to(value: str | None, fallback: str = "/") -> str:
     if value and value.startswith("/") and not value.startswith("//") and "\\" not in value:
         return value
     return fallback
+
+
+def _scan_redirect(value: str, started: bool) -> RedirectResponse:
+    destination = urlsplit(_return_to(value))
+    params = dict(parse_qsl(destination.query))
+    params["scan"] = "started" if started else "running"
+    return RedirectResponse(urlunsplit(("", "", destination.path, urlencode(params), "")), status_code=303)
 
 
 def create_app(db, runtime) -> FastAPI:
@@ -93,6 +101,7 @@ def create_app(db, runtime) -> FastAPI:
             "csrf_token": settings["csrf_token"],
             "stats": db.stats(),
             "runtime": runtime.snapshot(),
+            "scan_return_to": request.url.path + ("?" + request.url.query if request.url.query else ""),
             **extra,
         }
 
@@ -161,6 +170,76 @@ def create_app(db, runtime) -> FastAPI:
     def sources(request: Request):
         return templates.TemplateResponse(request, "sources.html", context(request, page="sources", sources=db.list_sources()))
 
+    def find_search(search_id: int):
+        try:
+            return db.get_search(search_id)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Wanted search not found") from None
+
+    @app.get("/wanted")
+    def wanted(request: Request):
+        return templates.TemplateResponse(request, "wanted.html", context(
+            request, page="wanted", searches=db.list_searches(), search={"enabled": True, "include_web": True},
+        ))
+
+    @app.get("/wanted/{search_id}")
+    def wanted_detail(request: Request, search_id: int, page: int = 1):
+        if page < 1:
+            raise HTTPException(status_code=400, detail="Page must be positive")
+        search = find_search(search_id)
+        rows, total = db.search_matches(search_id, page=page, per_page=30)
+        return templates.TemplateResponse(request, "wanted_detail.html", context(
+            request, page="wanted", search=search, rows=rows, total=total,
+            web_results=runtime.search_results(search_id), current_page=page, has_next=page * 30 < total,
+            prev_url=f"/wanted/{search_id}?page={page - 1}", next_url=f"/wanted/{search_id}?page={page + 1}",
+            return_to=request.url.path + ("?" + request.url.query if request.url.query else ""),
+        ))
+
+    async def save_wanted(request: Request, search_id: int | None = None):
+        form = await request.form()
+        require_csrf(str(form.get("csrf_token", "")))
+        if search_id is not None:
+            find_search(search_id)
+        values = {field: str(form.get(field, "")).strip() for field in (
+            "name", "keywords", "coin_type", "mint", "ruler", "exclude_terms", "category", "currency", "max_price",
+        )}
+        values.update(enabled=form.get("enabled") == "true", include_web=form.get("include_web") == "true")
+        try:
+            saved_id = db.save_search(values, search_id=search_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return RedirectResponse(f"/wanted/{saved_id}", status_code=303)
+
+    @app.post("/wanted")
+    async def wanted_create(request: Request):
+        return await save_wanted(request)
+
+    @app.post("/wanted/{search_id}")
+    async def wanted_update(request: Request, search_id: int):
+        return await save_wanted(request, search_id)
+
+    @app.post("/wanted/{search_id}/enabled")
+    def wanted_enabled(search_id: int, csrf_token: str = Form(""), enabled: str = Form(""), return_to: str = Form("/wanted")):
+        require_csrf(csrf_token)
+        find_search(search_id)
+        if enabled not in {"true", "false"}:
+            raise HTTPException(status_code=400, detail="Invalid search state")
+        db.set_search_enabled(search_id, enabled == "true")
+        return RedirectResponse(_return_to(return_to, "/wanted"), status_code=303)
+
+    @app.post("/wanted/{search_id}/delete")
+    def wanted_delete(search_id: int, csrf_token: str = Form("")):
+        require_csrf(csrf_token)
+        find_search(search_id)
+        db.delete_search(search_id)
+        return RedirectResponse("/wanted", status_code=303)
+
+    @app.post("/wanted/{search_id}/scan")
+    def wanted_scan(search_id: int, csrf_token: str = Form("")):
+        require_csrf(csrf_token)
+        find_search(search_id)
+        return _scan_redirect(f"/wanted/{search_id}", runtime.start_scan(mode="coins", search_id=search_id))
+
     @app.get("/discoveries")
     def discoveries(request: Request):
         return templates.TemplateResponse(
@@ -169,17 +248,20 @@ def create_app(db, runtime) -> FastAPI:
 
     @app.get("/settings")
     def settings(request: Request):
-        return templates.TemplateResponse(request, "settings.html", context(request, page="settings"))
+        return templates.TemplateResponse(request, "settings.html", context(
+            request, page="settings", web_search=provider_settings(db.path.parent),
+        ))
 
     @app.get("/history")
     def history(request: Request):
         return templates.TemplateResponse(request, "history.html", context(request, page="history", runs=db.runs(limit=20)))
 
     @app.post("/scan")
-    def scan(csrf_token: str = Form("")):
+    def scan(csrf_token: str = Form(""), mode: str = Form("both"), return_to: str = Form("/")):
         require_csrf(csrf_token)
-        started = runtime.start_scan()
-        return RedirectResponse("/?scan=" + ("started" if started else "running"), status_code=303)
+        if mode not in {"coins", "dealers", "both"}:
+            raise HTTPException(status_code=400, detail="Choose coins, dealers, or both")
+        return _scan_redirect(return_to, runtime.start_scan(mode=mode))
 
     @app.post("/listings/{listing_id}/save")
     def save(listing_id: int, csrf_token: str = Form(""), return_to: str = Form("/")):
@@ -239,5 +321,19 @@ def create_app(db, runtime) -> FastAPI:
         except (ValueError, KeyError):
             raise HTTPException(status_code=400, detail="Choose a valid time zone and 24-hour scan time") from None
         return RedirectResponse("/settings?saved=1", status_code=303)
+
+    @app.post("/settings/web-search")
+    def web_search_settings(csrf_token: str = Form(""), api_key: str = Form(""), action: str = Form("save")):
+        require_csrf(csrf_token)
+        try:
+            if action == "save":
+                save_api_key(db.path.parent, api_key.strip())
+            elif action == "clear":
+                clear_api_key(db.path.parent)
+            else:
+                raise ValueError("Choose save or clear for the web-search key")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return RedirectResponse("/settings?saved=1#web-search", status_code=303)
 
     return app

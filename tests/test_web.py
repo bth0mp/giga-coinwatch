@@ -14,7 +14,9 @@ class RuntimeStub:
         self.started = False
         self.stopped = False
         self.scan_requested = False
+        self.scan_request = None
         self.last_error = ""
+        self.web_results = {"status": "unconfigured", "results": [], "error": "", "checked_at": ""}
 
     def start(self):
         self.started = True
@@ -22,9 +24,13 @@ class RuntimeStub:
     def stop(self):
         self.stopped = True
 
-    def start_scan(self):
+    def start_scan(self, kind="manual", mode="both", search_id=None):
         self.scan_requested = True
+        self.scan_request = {"kind": kind, "mode": mode, "search_id": search_id}
         return True
+
+    def search_results(self, search_id):
+        return self.web_results
 
     def snapshot(self):
         return {"running": False, "phase": "idle", "source": None, "last_error": self.last_error}
@@ -132,3 +138,88 @@ def test_scan_error_banner_links_to_history_without_dumping_external_detail(tmp_
     assert 'href="/history"' in response.text
     assert "Dealer directory failed" not in response.text
     assert "details details details" not in response.text
+
+
+def test_scan_modes_validate_scope_and_return_to_current_page(tmp_path):
+    client, db, runtime = setup_catalog(tmp_path)
+    for mode in ("coins", "dealers", "both"):
+        response = client.post("/scan", data={**token(db), "mode": mode, "return_to": "/discoveries"})
+        assert response.status_code == 303
+        assert response.headers["location"] == "/discoveries?scan=started"
+        assert runtime.scan_request == {"kind": "manual", "mode": mode, "search_id": None}
+    assert client.post("/scan", data={**token(db), "mode": "everything"}).status_code == 400
+    response = client.post("/scan", data={**token(db), "mode": "coins", "return_to": "https://other.example"})
+    assert response.headers["location"] == "/?scan=started"
+
+
+def test_wanted_search_create_edit_match_and_scan(tmp_path):
+    client, db, runtime = setup_catalog(tmp_path)
+    response = client.post("/wanted", data={**token(db), "name": "My denarii", "coin_type": "denarius",
+                                           "currency": "GBP", "max_price": "50", "enabled": "true", "include_web": "true"})
+    assert response.status_code == 303
+    search = db.list_searches()[0]
+    assert search["name"] == "My denarii"
+    assert search["include_web"] == 1
+    detail = client.get(response.headers["location"])
+    assert detail.status_code == 200
+    assert "Denarius &lt;script&gt;alert(1)&lt;/script&gt;" in detail.text
+    assert "Old coin" not in detail.text
+    assert "Wider web" in detail.text
+    assert "My denarii" in client.get("/wanted").text
+    response = client.post(f"/wanted/{search['id']}/scan", data=token(db))
+    assert response.status_code == 303
+    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": search["id"]}
+    response = client.post(f"/wanted/{search['id']}", data={**token(db), "name": "Lower budget", "coin_type": "denarius",
+                                                         "currency": "GBP", "max_price": "40", "enabled": "true"})
+    assert response.status_code == 303
+    assert db.get_search(search["id"])["include_web"] == 0
+    assert "Denarius &lt;script&gt;" not in client.get(response.headers["location"]).text
+
+
+def test_wanted_search_mutations_require_csrf_and_missing_search_returns_404(tmp_path):
+    client, db, _ = setup_catalog(tmp_path)
+    assert client.post("/wanted", data={"name": "Unauthorised", "keywords": "athens"}).status_code == 403
+    response = client.post("/wanted", data={**token(db), "name": "Athens", "mint": "Athens", "enabled": "true"})
+    assert response.status_code == 303
+    search_id = db.list_searches()[0]["id"]
+    assert client.post(f"/wanted/{search_id}/enabled", data={**token(db), "enabled": "false"}).status_code == 303
+    assert db.get_search(search_id)["enabled"] == 0
+    assert client.post(f"/wanted/{search_id}/enabled", data={**token(db), "enabled": "perhaps"}).status_code == 400
+    assert client.post(f"/wanted/{search_id}/delete").status_code == 403
+    assert client.post(f"/wanted/{search_id}/delete", data=token(db)).status_code == 303
+    assert db.list_searches() == []
+    assert client.get(f"/wanted/{search_id}").status_code == 404
+    assert client.post(f"/wanted/{search_id}/scan", data=token(db)).status_code == 404
+
+
+def test_web_search_key_is_saved_locally_never_rendered_and_clearable(tmp_path, monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    client, db, _ = setup_catalog(tmp_path)
+    secret = "tvly-test-secret-not-for-html"
+    assert client.post("/settings/web-search", data={"api_key": secret}).status_code == 403
+    response = client.post("/settings/web-search", data={**token(db), "api_key": secret, "action": "save"})
+    assert response.status_code == 303
+    from coinwatch.web_search import load_api_key, provider_settings
+    assert load_api_key(tmp_path) == secret
+    assert secret not in client.get("/settings").text
+    assert secret not in client.get("/api/status").text
+    assert client.post("/settings/web-search", data={**token(db), "action": "clear"}).status_code == 303
+    assert provider_settings(tmp_path)["configured"] is False
+
+
+def test_wanted_web_leads_are_escaped_and_not_misrepresented_as_catalog_coins(tmp_path):
+    client, db, runtime = setup_catalog(tmp_path)
+    response = client.post("/wanted", data={**token(db), "name": "Athens", "mint": "Athens", "include_web": "true"})
+    assert response.status_code == 303
+    runtime.web_results = {"status": "complete", "results": [
+        {"title": "Owl <script>bad()</script>", "url": "https://shop.example/coin", "snippet": "A silver <b>coin</b>"},
+        {"title": "Unsafe result", "url": "javascript:alert(1)", "snippet": "Unverified price"},
+    ], "error": "", "checked_at": "2026-09-25T12:00:00+00:00"}
+    detail = client.get(response.headers["location"])
+    assert detail.status_code == 200
+    assert 'href="https://shop.example/coin"' in detail.text
+    assert "Owl &lt;script&gt;bad()&lt;/script&gt;" in detail.text
+    assert "A silver &lt;b&gt;coin&lt;/b&gt;" in detail.text
+    assert "javascript:" not in detail.text
+    assert "Unverified web lead" in detail.text
+    assert db.list_listings(view="all")[1] == 2

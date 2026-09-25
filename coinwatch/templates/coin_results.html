@@ -1,0 +1,27 @@
+<div class="coin-grid">
+  {% for coin in rows %}
+  <article class="coin-card">
+    <div class="coin-image">
+      {% if coin.image_url|safe_url %}<img src="{{ coin.image_url|safe_url }}" alt="Coin photograph from {{ coin.source_name }}" loading="lazy">{% else %}<div class="image-empty">No image from seller</div>{% endif %}
+      {% if coin.is_new %}<span class="new-flag">New</span>{% endif %}
+    </div>
+    <div class="coin-body">
+      <p class="coin-source">{{ coin.source_name }}</p>
+      <h2>{% if coin.url|safe_url %}<a href="{{ coin.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ coin.title }}</a>{% else %}{{ coin.title }}{% endif %}</h2>
+      <div class="coin-facts"><span>{{ coin.category }}</span><span>{{ coin.availability }}</span></div>
+      <div class="coin-bottom"><p class="coin-price">{{ coin.currency }} {{ coin.price }}</p>
+        <form action="/listings/{{ coin.id }}/save" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="{{ return_to }}">
+          <button class="save-button" type="submit" aria-label="{{ 'Remove saved coin' if coin.saved else 'Save coin' }}" title="{{ 'Remove saved coin' if coin.saved else 'Save coin' }}">{{ '★' if coin.saved else '☆' }}</button>
+        </form>
+      </div>
+      <div class="seen-date"><span>First found {{ coin.first_seen|local_time(settings.timezone) }}</span><span>Last checked {{ coin.last_seen|local_time(settings.timezone) }}</span>{% if coin.listed_at %}<span>Seller listed {{ coin.listed_at|local_time(settings.timezone) }}</span>{% endif %}</div>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+<nav class="pagination" aria-label="Listing pages">
+  {% if current_page > 1 %}<a href="{{ prev_url }}">Previous</a>{% else %}<span></span>{% endif %}
+  <span>Page {{ current_page }}</span>
+  {% if has_next %}<a href="{{ next_url }}">Next</a>{% else %}<span></span>{% endif %}
+</nav>

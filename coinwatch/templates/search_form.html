@@ -1,0 +1,17 @@
+<form class="wanted-form" method="post" action="{{ '/wanted/' ~ search.id if search.id else '/wanted' }}">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+  <label class="wide-field"><span>Search name</span><input name="name" value="{{ search.name|default('') }}" maxlength="120" placeholder="e.g. Athens tetradrachms" required></label>
+  <label class="wide-field"><span>Keywords</span><input name="keywords" value="{{ search.keywords|default('') }}" maxlength="500" placeholder="e.g. owl silver"></label>
+  <label><span>Coin type keywords</span><input name="coin_type" value="{{ search.coin_type|default('') }}" maxlength="200" placeholder="e.g. tetradrachm"></label>
+  <label><span>Mint keywords</span><input name="mint" value="{{ search.mint|default('') }}" maxlength="200" placeholder="e.g. Athens"></label>
+  <label><span>Ruler keywords</span><input name="ruler" value="{{ search.ruler|default('') }}" maxlength="200" placeholder="e.g. Hadrian"></label>
+  <label><span>Category</span><input name="category" value="{{ search.category|default('') }}" maxlength="100" placeholder="e.g. Roman or Greek"></label>
+  <label class="wide-field"><span>Exclude terms</span><input name="exclude_terms" value="{{ search.exclude_terms|default('') }}" maxlength="500" placeholder="e.g. fourree plated"></label>
+  <label><span>Currency</span><input name="currency" value="{{ search.currency|default('') }}" maxlength="3" placeholder="e.g. GBP"></label>
+  <label><span>Maximum price</span><input type="number" name="max_price" value="{{ search.max_price|default('', true) }}" min="0" step="0.01" placeholder="Any price"></label>
+  <p class="form-help wide-field">All entered words must match the seller’s listing title or category. Use double quotes for an exact phrase; any excluded word or phrase removes a match. Mint, ruler and type are search terms, not verified coin attributes. A price limit needs a currency; currencies are not converted.</p>
+  <label class="checkbox-label wide-field"><input type="checkbox" name="enabled" value="true" {% if search.enabled %}checked{% endif %}><span>Include this search in daily coin scans</span></label>
+  <label class="checkbox-label wide-field"><input type="checkbox" name="include_web" value="true" {% if search.include_web %}checked{% endif %}><span>Also look for leads on the wider web</span></label>
+  <p class="form-help wide-field">Automatic web search needs an optional Tavily key in <a href="/settings#web-search">Settings</a>. You can also open a web search yourself.</p>
+  <button class="button button-primary wide-field" type="submit">{{ 'Save changes' if search.id else 'Save wanted search' }}</button>
+</form>

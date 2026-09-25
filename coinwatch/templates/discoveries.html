@@ -10,5 +10,5 @@
     </div>
     <div class="decision-actions"><form method="post" action="/discoveries/{{ candidate.id }}/decision"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="decision" value="accepted"><button class="button button-primary" type="submit">Add to sources</button></form><form method="post" action="/discoveries/{{ candidate.id }}/decision"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="decision" value="dismissed"><button class="button button-secondary" type="submit">Dismiss</button></form></div>
   </article>
-{% endfor %}</div>{% else %}<div class="empty-state"><h2>No leads to review</h2><p>Discovery runs with scans. New evidence-backed dealer leads will appear here.</p></div>{% endif %}
+{% endfor %}</div>{% else %}<div class="empty-state"><h2>No leads to review</h2><p>Use Find dealers to look for more fixed-price coin shops. New leads will appear here for review.</p></div>{% endif %}
 {% endblock %}

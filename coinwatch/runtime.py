@@ -4,7 +4,7 @@ import threading
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from .scanner import Scanner
+from .scanner import Scanner, get_scan_search, normalize_scan_mode
 
 log = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class Runtime:
         self._worker = None
         self._scanner = None
         self._scheduler = None
-        self._state = {'running': False, 'phase': 'Idle', 'source': '', 'last_error': ''}
+        self._state = {'running': False, 'mode': '', 'search_id': None, 'phase': 'Idle', 'source': '', 'last_error': ''}
 
     def _update(self, **values):
         with self._lock:
@@ -57,6 +57,20 @@ class Runtime:
             state = dict(self._state)
         state['next_due'] = schedule_state(self.db.settings())['next_due']
         return state
+
+    def search_results(self, search_id):
+        from .web_search import WebSearchError, load_api_key
+        search = self.db.get_search(search_id)
+        result = self.db.search_results(search_id)
+        if search['include_web']:
+            try:
+                api_key = load_api_key(self.db.path.parent)
+            except WebSearchError as e:
+                result.update(status='error', error=str(e))
+            else:
+                if not api_key and not result['results']:
+                    result.update(status='unconfigured', error='Configure a Tavily API key in Settings to enable wider web searches.')
+        return result
 
     def start(self):
         if self._scheduler and self._scheduler.is_alive():
@@ -76,20 +90,22 @@ class Runtime:
                 log.exception('Scheduler check failed')
             self._stop.wait(30)
 
-    def start_scan(self, kind='manual'):
+    def start_scan(self, kind='manual', mode='both', search_id=None):
+        mode = normalize_scan_mode(mode)
+        get_scan_search(self.db, mode, search_id)
         with self._lock:
             if self._state['running'] or self._stop.is_set():
                 return False
-            self._state.update(running=True, phase='Starting scan', source='', last_error='')
-            self._worker = threading.Thread(target=self._work, args=(kind,), name='catalog-scan', daemon=True)
+            self._state.update(running=True, mode=mode, search_id=search_id, phase='Starting scan', source='', last_error='')
+            self._worker = threading.Thread(target=self._work, args=(kind, mode, search_id), name='catalog-scan', daemon=True)
             self._worker.start()
         return True
 
-    def _work(self, kind):
+    def _work(self, kind, mode='both', search_id=None):
         try:
             self._scanner = Scanner(self.db, progress=self._update, stop_event=self._stop)
-            result = self._scanner.run(kind)
-            if result['status'] == 'complete' or (kind == 'scheduled' and result['status'] in ('partial', 'failed')):
+            result = self._scanner.run(kind, mode=mode, search_id=search_id)
+            if mode == 'both' and search_id is None and (result['status'] == 'complete' or (kind == 'scheduled' and result['status'] in ('partial', 'failed'))):
                 state = schedule_state(self.db.settings())
                 if state['due']:
                     self.db.set_internal('last_scheduled_date', state['occurrence'])
@@ -99,7 +115,7 @@ class Runtime:
             log.exception('Background scan failed')
             self._update(last_error=str(e))
         finally:
-            self._update(running=False, phase='Idle', source='')
+            self._update(running=False, mode='', search_id=None, phase='Idle', source='')
 
     def stop(self):
         self._stop.set()

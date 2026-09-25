@@ -1,5 +1,5 @@
 (() => {
-  const button = document.querySelector('[data-scan-button]');
+  const buttons = document.querySelectorAll('[data-scan-button]');
   const label = document.querySelector('[data-scan-status]');
   const light = document.querySelector('[data-status-light]');
   const page = document.body.dataset.page;
@@ -52,16 +52,16 @@
       if (!response.ok) return;
       const status = await response.json();
       const running = status.running === true;
-      button.disabled = running;
-      button.textContent = running ? 'Scanning…' : 'Scan now';
+      buttons.forEach((button) => { button.disabled = running; });
       light.classList.toggle('busy', running);
-      label.textContent = running ? `Scanning: ${status.source || status.phase || 'starting'}` : 'Ready';
+      const mode = { coins: 'Scanning coins', dealers: 'Finding dealers', both: 'Scanning coins and dealers' }[status.mode] || 'Scanning';
+      label.textContent = running ? `${mode}: ${status.source || status.phase || 'starting'}` : 'Ready';
 
       if (wasRunning && !running) {
         const active = document.activeElement;
         const editing = document.querySelector('form[data-edited="true"]') ||
           active?.matches('input:not([type="hidden"]), select, textarea');
-        if (['listings', 'sources', 'discoveries', 'history'].includes(page) && !editing) {
+        if (['listings', 'sources', 'discoveries', 'history', 'wanted'].includes(page) && !editing) {
           window.location.replace(refreshedUrl());
           return;
         }

@@ -11,6 +11,8 @@ dist/
 .env
 .env.*
 !.env.example
+web-search.json
+.web-search-*.tmp
 *.db
 *.db-shm
 *.db-wal

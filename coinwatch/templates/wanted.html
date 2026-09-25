@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Wanted coins{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Wanted coins</h1><p>Keep searches for the coin types, mints and rulers you collect.</p></div></div>
+<div class="wanted-layout">
+  <section aria-labelledby="saved-searches-heading">
+    <h2 id="saved-searches-heading" class="section-heading">Your searches</h2>
+    {% if searches %}<div class="wanted-list">{% for saved in searches %}
+      <article class="wanted-row">
+        <div class="wanted-summary"><h3><a href="/wanted/{{ saved.id }}">{{ saved.name }}</a></h3><p>{{ saved.match_count }} available {{ 'match' if saved.match_count == 1 else 'matches' }} at monitored dealers</p>
+          <p class="muted">{{ 'Daily scans enabled' if saved.enabled else 'Daily scans paused' }}{% if saved.include_web %} · Wider web included when configured{% endif %}</p>
+        </div>
+        <div class="wanted-actions">
+          <a class="button button-secondary" href="/wanted/{{ saved.id }}">View matches</a>
+          <form action="/wanted/{{ saved.id }}/enabled" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ 'false' if saved.enabled else 'true' }}"><button class="button button-secondary" type="submit">{{ 'Pause' if saved.enabled else 'Enable' }}</button></form>
+        </div>
+      </article>
+    {% endfor %}</div>{% else %}<div class="empty-state"><h2>What are you looking for?</h2><p>Save a search to check existing stock straight away and keep checking as new coins arrive.</p></div>{% endif %}
+  </section>
+  <section class="panel wanted-editor" aria-labelledby="new-search-heading"><h2 id="new-search-heading">New wanted search</h2>{% include "search_form.html" %}</section>
+</div>
+{% endblock %}

@@ -57,13 +57,22 @@ def main():
     run = commands.add_parser('run', help='Start dashboard and background scheduler')
     run.add_argument('--host', default='127.0.0.1')
     run.add_argument('--port', type=int, default=8000)
-    scan = commands.add_parser('scan', help='Run one catalog and discovery scan')
-    scan.add_argument('--no-discovery', action='store_true')
+    scan = commands.add_parser('scan', help='Scan coin listings, discover dealers, or do both')
+    scan.add_argument('--mode', choices=('coins', 'dealers', 'both'), default='both', help='Work to run (default: both)')
+    scan.add_argument('--no-discovery', action='store_true', help='Legacy alias for --mode coins')
     scan.add_argument('--source', action='append')
+    scan.add_argument('--search-id', type=int, help='Run a saved wanted search by its positive ID')
     commands.add_parser('status')
     commands.add_parser('backup').add_argument('destination', type=Path)
     commands.add_parser('restore').add_argument('source', type=Path)
     args = parser.parse_args()
+    if args.command == 'scan' and args.no_discovery and args.mode == 'dealers':
+        parser.error('--mode dealers cannot be combined with --no-discovery')
+    if args.command == 'scan' and args.search_id is not None:
+        if args.search_id <= 0:
+            parser.error('--search-id must be a positive integer')
+        if args.mode == 'dealers':
+            parser.error('--search-id requires --mode coins or --mode both')
     directory = data_directory(args.data_dir)
     directory.mkdir(parents=True, exist_ok=True)
     configure_logging(directory)
@@ -100,7 +109,7 @@ def main():
         elif args.command == 'scan':
             from .scanner import Scanner
             with InstanceLock(directory):
-                result = Scanner(db).run(source_ids=args.source, include_discovery=not args.no_discovery)
+                result = Scanner(db).run(source_ids=args.source, include_discovery=not args.no_discovery, mode=args.mode, search_id=args.search_id)
             print(json.dumps(result, indent=2))
             return 1 if result['status'] in ('failed','busy') else 0
         else:

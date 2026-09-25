@@ -16,6 +16,8 @@ Date: 2026-09-25
 - The restarted native app performed a scheduled scan: all five enabled categories completed with 259 observations and zero newly found/duplicate listings. Discovery failures were retained in History and the scheduled occurrence was consumed, avoiding a retry loop. The default schedule is 09:00 Europe/London.
 - The live dashboard was opened with actual coin images and listings. Browser closure is independent of the task. The at-logon trigger was inspected, but an actual Windows sign-out/sign-in was not performed during this session.
 - Python wheel build, package compilation, dependency check and native backup/restore tests succeeded. Cross-mode migration and Linux runtime behavior remain untested without Docker.
+- Wanted-search update: 161 automated tests passed, covering combined keyword/phrase matching, existing inventory, currency limits, saved-search persistence, separate scan modes, daily scheduling, API-key isolation, provider errors, edited/deleted searches and interrupted scans. Provider requests were mocked; no Tavily account or key was available, so authenticated live searches remain untested.
+- Wanted-search UI was exercised on an isolated fixture database, including creation and matching, desktop and narrow-screen layouts. The native task was then restarted; live Wanted coins and Settings pages loaded, `/health` returned healthy, and dependency checks passed. The additive migration preserved 565 listings, 95 sources, all six user-enabled monitors and existing discovery decisions. A database backup was saved before the upgrade. Wider-web setup was confirmed unconfigured, ready for a key later.
 
 ## Integration checks to run
 

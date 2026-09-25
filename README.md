@@ -1,6 +1,6 @@
 # giga-coinwatch
 
-giga-coinwatch is a self-hosted ancient-coin listing monitor for a personal collection. Its local dashboard shows observed fixed-price listings, scan history, source health and dealer discovery leads. The first full scan of a source records its existing stock; later observations can appear as new coins. A saved source is not necessarily an active scraper: check **Sources** for actual coverage and errors. giga-coinwatch does not search the entire web.
+giga-coinwatch is a self-hosted ancient-coin listing monitor for a personal collection. Its local dashboard shows observed fixed-price listings, wanted coin searches, scan history, source health and dealer discovery leads. The first full scan of a source records its existing stock; later observations can appear as new coins. A saved source is not necessarily an active scraper: check **Sources** for actual coverage and errors. Optional wider-web search adds unverified leads from a search provider; coverage is not exhaustive.
 
 The five dealer scopes enabled by default are:
 
@@ -15,6 +15,29 @@ The five dealer scopes enabled by default are:
 The bundled registry contains 81 dealer/storefront entries, including additional ancient and mixed-period sellers saved for review. Dealers with restrictions on automated collection stay disabled. Coverage is limited to the categories above, not each shop's full inventory; see [source validation](docs/source-validation.md) for evidence and limitations. Discovery checks public dealer directories and queues additional domains for review, with supporting shop links when it can verify fixed-price ancient stock. Accepting a dealer saves it to Sources; recurring monitoring needs a validated parser.
 
 Choose **one** running mode for a collection database. Both modes serve the dashboard at <http://127.0.0.1:8000/> and run the daily schedule inside giga-coinwatch. Keep the PC awake for scheduled scans.
+
+## Wanted coins and scan controls
+
+Open **Wanted coins** to save a search by coin type, mint, ruler, keywords, exclusions, category, currency and maximum price. For example, enter `denarius` as the type, `Rome` as the mint, and `Hadrian` as the ruler. All entered words must occur in the seller's title or category. Put a phrase in double quotes to keep its words together; any excluded word or phrase rejects a local match. Matching ignores case and accents, but does not infer attributes, translate mint names, or expand synonyms. A price limit requires a currency; no exchange-rate conversion is performed.
+
+Matches include available coins from the initial inventory and subsequent scans, with a link to the seller and the last observed price. These are seller-text matches, not verified coin attributions. Pausing a wanted search stops its automatic web queries; the saved local match view stays usable. Editing the criteria clears old web leads for that search. Deleting a search leaves catalog and saved coins intact.
+
+- **Scan coins** refreshes enabled, supported dealer stock and checks enabled wanted searches on the web when configured.
+- **Find dealers** checks public directories for additional dealer candidates; it does not rescan coin inventory. Review leads under **Discoveries**. A newly accepted dealer still needs a validated parser before monitoring can be enabled.
+- **Scan both** does both jobs. The daily schedule uses this mode.
+- **Scan for this search** refreshes dealer stock and runs the selected wanted search on the web if opted in. It also works for a paused search as an explicit one-off check.
+
+Only one scan runs at a time. A coin-only, dealer-only or targeted scan does not replace the next daily combined check.
+
+### Optional wider-web setup
+
+Monitored-dealer searches and directory discovery work without an API key. Each wanted search also has an **Open web search** link for manual use. To enable automatic web leads later, create a [Tavily account](https://app.tavily.com/) and enter its API key in **Settings → Wider-web search**. As checked on 25 September 2026, Tavily offers 1,000 free API credits per month without a payment card; check its [current allowance and pricing](https://docs.tavily.com/documentation/api-credits) before enabling paid usage.
+
+giga-coinwatch uses basic searches (one credit per query), at most five wanted searches per scan, prioritizing those least recently attempted. More than five enabled searches rotate across scans. Manual scans also use credits. There are no automatic API retries, and the app does not enable billing or purchase credits. Each query requests up to ten leads. Searches send the coin criteria and exclusions to Tavily; price and currency limits apply to catalog matches, not unverified web leads.
+
+Web results are clearly labelled **unverified** and can include auctions, sold coins or pages without a price. They never enter the monitored-dealer catalog automatically. A successful query replaces that search's prior lead list; a failed query keeps prior leads visible with the error and check time.
+
+The key is stored separately from the collection database in `web-search.json` in the app data directory (inside `/data` for Docker). It is never shown back in the dashboard. You can remove it in Settings. An optional `TAVILY_API_KEY` environment variable on the running process takes precedence over the local file; remove that variable and restart to stop using an environment key. For a normal setup, use Settings so no environment configuration is needed.
 
 ## Windows background app
 
@@ -35,7 +58,7 @@ This creates `.venv`, installs giga-coinwatch using the versions in `requirement
 
 `remove-startup.ps1` stops and removes the task, leaving the database and logs in place. Re-run `install.ps1` after updating the project to refresh its environment and task. The task starts after this user signs in and ends at sign-out; Windows must stay awake and signed in for scans. Task Scheduler restarts a failed process but does not create a separate daily scan job.
 
-The installed `giga-coinwatch` command is also available; `python -m coinwatch` remains supported. For CLI status, use the installed interpreter after setting `$dataDir` to the installation's data path. For a one-off CLI scan, stop the background task first; while the app is running, use its **Scan now** button instead:
+The installed `giga-coinwatch` command is also available; `python -m coinwatch` remains supported. For CLI status, use the installed interpreter after setting `$dataDir` to the installation's data path. For a one-off CLI scan, stop the background task first; while the app is running, use its dashboard scan buttons instead:
 
 ```powershell
 $dataDir = Join-Path $env:LOCALAPPDATA 'Coinwatch'
@@ -46,6 +69,8 @@ $dataDir = Join-Path $env:LOCALAPPDATA 'Coinwatch'
 ```
 
 Do not run a manual scan at the same time as another installation. giga-coinwatch uses a run lease to prevent overlapping scans within one database.
+
+CLI scans accept `scan --mode coins`, `scan --mode dealers`, or `scan --mode both` (the default). To refresh a wanted search, use `scan --mode coins --search-id 1`, replacing `1` with the ID in that search's dashboard URL.
 
 ## Docker
 
@@ -70,7 +95,7 @@ Do not run the native task and Docker service together on port 8000. Stop one be
 
 ## Backup and migration
 
-The `backup` and `restore` CLI commands preserve the collection database, including source baselines, observed identities, saved coins, settings and discovery decisions. Keep a copy of the backup outside the app data directory or Docker volume. Stop the old installation before restoring into and starting a different mode; never mount one live SQLite database in both modes.
+The `backup` and `restore` CLI commands preserve the collection database, including source baselines, observed identities, saved coins, wanted searches and web leads, schedule settings and discovery decisions. API keys are excluded: re-enter the key in Settings after moving to another installation. Keep a copy of the backup outside the app data directory or Docker volume. Stop the old installation before restoring into and starting a different mode; never mount one live SQLite database in both modes.
 
 For a native backup, stop the task and use the same data path as its installation:
 
@@ -113,4 +138,4 @@ docker compose up -d
 
 ## Running limits
 
-Listings link to sellers; giga-coinwatch does not purchase coins or authenticate them. New means **first found by giga-coinwatch**, not necessarily newly listed by a seller. Source pages can change, block automation or contain auction and sold stock, so check the dashboard's source health before relying on a scan. The app has no cloud hosting or paid search dependency.
+Listings link to sellers; giga-coinwatch does not purchase coins or authenticate them. New means **first found by giga-coinwatch**, not necessarily newly listed by a seller. Source pages can change, block automation or contain auction and sold stock, so check the dashboard's source health before relying on a scan. The app runs locally; wider-web search is an optional external service.

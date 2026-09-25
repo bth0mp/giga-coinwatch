@@ -8,9 +8,11 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from .searches import CRITERIA, matcher, validate_search, with_web_query
 
 
 def utcnow():
@@ -80,6 +82,19 @@ class Database:
                   url TEXT NOT NULL, evidence_url TEXT DEFAULT '', discovered_from TEXT DEFAULT '',
                   reason TEXT DEFAULT '', status TEXT DEFAULT 'pending', created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS wanted_searches (
+                  id INTEGER PRIMARY KEY, name TEXT NOT NULL, keywords TEXT NOT NULL DEFAULT '',
+                  coin_type TEXT NOT NULL DEFAULT '', mint TEXT NOT NULL DEFAULT '', ruler TEXT NOT NULL DEFAULT '',
+                  exclude_terms TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
+                  currency TEXT NOT NULL DEFAULT '', max_price TEXT NOT NULL DEFAULT '',
+                  enabled INTEGER NOT NULL DEFAULT 1, include_web INTEGER NOT NULL DEFAULT 1,
+                  created_at TEXT NOT NULL, web_status TEXT NOT NULL DEFAULT 'idle',
+                  web_error TEXT NOT NULL DEFAULT '', web_checked_at TEXT NOT NULL DEFAULT '');
+                CREATE TABLE IF NOT EXISTS search_web_results (
+                  search_id INTEGER NOT NULL REFERENCES wanted_searches(id) ON DELETE CASCADE,
+                  url TEXT NOT NULL, title TEXT NOT NULL, snippet TEXT NOT NULL,
+                  first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, position INTEGER NOT NULL,
+                  PRIMARY KEY(search_id,url));
             ''')
             for s in seeds:
                 c.execute('INSERT OR IGNORE INTO sources(id,name,url,adapter,enabled,note) VALUES(?,?,?,?,?,?)',
@@ -178,6 +193,101 @@ class Database:
             if not c.execute('UPDATE listings SET saved=1-saved WHERE id=?', (id,)).rowcount:
                 raise ValueError('Listing not found')
 
+    def get_search(self, id):
+        with self.connect() as c:
+            row = c.execute('SELECT * FROM wanted_searches WHERE id=?', (id,)).fetchone()
+        if row is None:
+            raise ValueError('Wanted search not found')
+        return with_web_query(dict(row))
+
+    def list_searches(self, enabled_only=False):
+        with self.connect() as c:
+            where = ' WHERE enabled=1' if enabled_only else ''
+            rows = [dict(r) for r in c.execute('SELECT * FROM wanted_searches' + where + ' ORDER BY web_checked_at,id')]
+            for row in rows:
+                c.create_function('wanted_match', 4, matcher(row), deterministic=True)
+                row['match_count'] = c.execute("SELECT COUNT(*) FROM listings WHERE availability='available' AND wanted_match(title,category,currency,price)").fetchone()[0]
+        return [with_web_query(row) for row in rows]
+
+    def save_search(self, values, search_id=None):
+        clean = validate_search(values)
+        with self.connect() as c:
+            if search_id is None:
+                columns = ','.join(clean) + ',created_at'
+                marks = ','.join('?' for _ in range(len(clean) + 1))
+                return c.execute(f'INSERT INTO wanted_searches({columns}) VALUES({marks})',
+                                 (*clean.values(), utcnow())).lastrowid
+            old = c.execute('SELECT * FROM wanted_searches WHERE id=?', (search_id,)).fetchone()
+            if old is None:
+                raise ValueError('Wanted search not found')
+            if any(clean[key] != old[key] for key in CRITERIA):
+                c.execute('DELETE FROM search_web_results WHERE search_id=?', (search_id,))
+                c.execute("UPDATE wanted_searches SET web_status='idle',web_error='',web_checked_at='' WHERE id=?", (search_id,))
+            assignments = ','.join(f'{key}=?' for key in clean)
+            c.execute(f'UPDATE wanted_searches SET {assignments} WHERE id=?', (*clean.values(), search_id))
+        return search_id
+
+    def set_search_enabled(self, id, enabled):
+        with self.connect() as c:
+            if not c.execute('UPDATE wanted_searches SET enabled=? WHERE id=?', (bool(enabled), id)).rowcount:
+                raise ValueError('Wanted search not found')
+
+    def delete_search(self, id):
+        with self.connect() as c:
+            if not c.execute('DELETE FROM wanted_searches WHERE id=?', (id,)).rowcount:
+                raise ValueError('Wanted search not found')
+
+    def search_matches(self, id, page=1, per_page=30):
+        search = self.get_search(id)
+        where = " WHERE l.availability='available' AND wanted_match(l.title,l.category,l.currency,l.price)"
+        with self.connect() as c:
+            c.create_function('wanted_match', 4, matcher(search), deterministic=True)
+            total = c.execute('SELECT COUNT(*) FROM listings l' + where).fetchone()[0]
+            rows = c.execute('SELECT l.*,s.name AS source_name FROM listings l JOIN sources s ON s.id=l.source_id' + where +
+                             ' ORDER BY l.first_seen DESC,l.id DESC LIMIT ? OFFSET ?',
+                             (per_page, (max(1, page) - 1) * per_page)).fetchall()
+        return [dict(row) for row in rows], total
+
+    def record_web_search(self, search_id, results=None, error=None, *, expected_query=None, run_id=None):
+        now = utcnow()
+        # Validate the complete result set before changing the last successful snapshot.
+        clean = {}
+        if error is None:
+            for result in (results or [])[:20]:
+                url = public_url_shape(result['url'])
+                parts = urlsplit(url)
+                params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+                          if not k.lower().startswith('utm_') and k.lower() not in ('fbclid', 'gclid')]
+                url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(params), ''))
+                clean.setdefault(url, (str(result.get('title') or url)[:500], str(result.get('snippet') or '')[:500]))
+        with self.connect() as c:
+            c.execute('BEGIN IMMEDIATE')
+            if run_id is not None:
+                cutoff = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat(timespec='seconds')
+                if not c.execute("SELECT 1 FROM runs WHERE id=? AND status='running' AND heartbeat>=?", (run_id, cutoff)).fetchone():
+                    return False
+            search = c.execute('SELECT * FROM wanted_searches WHERE id=?', (search_id,)).fetchone()
+            if expected_query is not None and (search is None or not search['include_web'] or
+                    with_web_query(dict(search))['web_query'] != expected_query):
+                return False
+            if search is None:
+                raise ValueError('Wanted search not found')
+            if error is None:
+                previous = dict(c.execute('SELECT url,first_seen FROM search_web_results WHERE search_id=?', (search_id,)).fetchall())
+                c.execute('DELETE FROM search_web_results WHERE search_id=?', (search_id,))
+                for position, (url, (title, snippet)) in enumerate(clean.items()):
+                    c.execute('INSERT INTO search_web_results VALUES(?,?,?,?,?,?,?)',
+                              (search_id, url, title, snippet, previous.get(url, now), now, position))
+            c.execute('UPDATE wanted_searches SET web_status=?,web_error=?,web_checked_at=? WHERE id=?',
+                      ('error' if error is not None else 'complete', str(error or '')[:500], now, search_id))
+        return True
+
+    def search_results(self, search_id):
+        search = self.get_search(search_id)
+        with self.connect() as c:
+            rows = [dict(r) for r in c.execute('SELECT * FROM search_web_results WHERE search_id=? ORDER BY position', (search_id,))]
+        return dict(status=search['web_status'], results=rows, error=search['web_error'], checked_at=search['web_checked_at'])
+
     def stats(self):
         with self.connect() as c:
             row = c.execute("SELECT COUNT(*) AS total,COALESCE(SUM(is_new=1 AND availability='available'),0) AS new,COALESCE(SUM(saved),0) AS saved FROM listings").fetchone()
@@ -204,8 +314,9 @@ class Database:
         return id
 
     def renew_lease(self, run_id):
+        cutoff = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat(timespec='seconds')
         with self.connect() as c:
-            return c.execute("UPDATE runs SET heartbeat=? WHERE id=? AND status='running'", (utcnow(), run_id)).rowcount > 0
+            return c.execute("UPDATE runs SET heartbeat=? WHERE id=? AND status='running' AND heartbeat>=?", (utcnow(), run_id, cutoff)).rowcount > 0
 
     def finish_run(self, run_id, status, summary):
         with self.connect() as c:

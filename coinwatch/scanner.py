@@ -6,6 +6,24 @@ from .fetch import Fetcher
 log = logging.getLogger(__name__)
 
 
+def normalize_scan_mode(mode, include_discovery=True):
+    if mode not in ('coins', 'dealers', 'both'):
+        raise ValueError('Choose a scan mode: coins, dealers, or both.')
+    if not include_discovery:
+        if mode == 'dealers':
+            raise ValueError('Dealer scanning cannot be combined with --no-discovery.')
+        return 'coins'
+    return mode
+
+
+def get_scan_search(db, mode, search_id):
+    if search_id is None:
+        return None
+    if mode == 'dealers':
+        raise ValueError('A wanted search requires a coin or combined scan.')
+    return db.get_search(search_id)
+
+
 class Scanner:
     def __init__(self, db, scrape=None, progress=None, stop_event=None):
         self.db = db
@@ -14,11 +32,58 @@ class Scanner:
         self.stop_event = stop_event or threading.Event()
         self.run_id = None
 
-    def run(self, kind='manual', source_ids=None, include_discovery=True):
-        run_id = self.db.claim_run(kind)
+    def _scan_web(self, searches, errors, notes):
+        from .web_search import WebSearchError, load_api_key, search_web
+        searches = [search for search in searches if search['include_web']]
+        if not searches:
+            return 0, 0
+        try:
+            api_key = load_api_key(self.db.path.parent)
+        except WebSearchError as e:
+            errors.append(f'Wider web search: {e}')
+            return 0, 0
+        if not api_key:
+            notes.append('Wider web search skipped: configure a Tavily API key in Settings to enable it.')
+            return 0, 0
+        if len(searches) > 5:
+            notes.append(f'Wider web search is limited to five wanted searches per scan; {len(searches) - 5} remain for a later scan.')
+        queries, leads = 0, 0
+        for search in searches[:5]:
+            if self.stop_event.is_set():
+                break
+            self.progress(phase='Searching the wider web', source=search['name'])
+            queries += 1
+            results, error = None, None
+            try:
+                results = search_web(search['web_query'], api_key)
+            except WebSearchError as e:
+                error = str(e)
+            except Exception as e:
+                # Transport exceptions can embed authorization headers or keys.
+                log.warning('Web search failed for wanted search %s (%s)', search['id'], type(e).__name__)
+                error = 'Wider web search failed. Please try again later.'
+            if self.stop_event.is_set():
+                break
+            if not self.db.record_web_search(search['id'], results, error, expected_query=search['web_query'], run_id=self.run_id):
+                if not self.db.renew_lease(self.run_id):
+                    self.stop_event.set()
+                    break
+                notes.append(f"Wanted search \"{search['name']}\" changed or was removed; its outdated web response was discarded.")
+                continue
+            if error:
+                errors.append(f"{search['name']}: {error}")
+            else:
+                leads += len(results)
+        return queries, leads
+
+    def run(self, kind='manual', source_ids=None, include_discovery=True, mode='both', search_id=None):
+        mode = normalize_scan_mode(mode, include_discovery)
+        selected_search = get_scan_search(self.db, mode, search_id)
+        run_kind = f'manual-{mode}' if kind == 'manual' else kind
+        run_id = self.db.claim_run(run_kind)
         self.run_id = run_id
         if not run_id:
-            return {'status': 'busy', 'summary': 'A scan is already running.'}
+            return {'status': 'busy', 'mode': mode, 'search_id': search_id, 'summary': 'A scan is already running.'}
         heartbeat_stop = threading.Event()
         def heartbeat():
             while not heartbeat_stop.wait(20):
@@ -27,7 +92,8 @@ class Scanner:
                     break
         thread = threading.Thread(target=heartbeat, name='scan-lease', daemon=True)
         thread.start()
-        errors, seen, new, candidates = [], 0, 0, 0
+        errors, notes, seen, new, candidates = [], [], 0, 0, 0
+        web_queries, web_leads, matches = 0, 0, None
         status = 'complete'
         try:
             if self.scrape:
@@ -36,7 +102,8 @@ class Scanner:
                 from .sources import scrape_source
                 scrape = scrape_source
             fetcher = Fetcher(stop_event=self.stop_event)
-            for source in self.db.list_sources():
+            sources = self.db.list_sources() if mode in ('coins', 'both') else []
+            for source in sources:
                 if not source['enabled'] or (source_ids and source['id'] not in source_ids):
                     continue
                 if self.stop_event.is_set():
@@ -53,7 +120,18 @@ class Scanner:
                     log.exception('Source scan failed: %s', source['name'])
                     self.db.record_source_result(run_id, source, [], False, 0, str(e)[:700])
                     errors.append(f"{source['name']}: {e}")
-            if include_discovery and not self.stop_event.is_set():
+            if mode in ('coins', 'both') and not self.stop_event.is_set():
+                searches = [selected_search] if selected_search else self.db.list_searches(enabled_only=True)
+                web_queries, web_leads = self._scan_web(searches, errors, notes)
+                if selected_search:
+                    try:
+                        current_search = self.db.get_search(selected_search['id'])
+                        _, matches = self.db.search_matches(selected_search['id'], per_page=1)
+                    except ValueError:
+                        notes.append('The selected wanted search was removed during this scan.')
+                    else:
+                        notes.append(f"Wanted search \"{current_search['name']}\": {matches} matching catalog listings.")
+            if mode in ('dealers', 'both') and not self.stop_event.is_set():
                 self.progress(phase='Finding dealers', source='Dealer directories')
                 try:
                     from .discovery import discover
@@ -82,9 +160,19 @@ class Scanner:
         finally:
             heartbeat_stop.set()
             thread.join(timeout=2)
-            summary = f'{seen} listings checked; {new} newly found; {candidates} dealer candidates.'
+            if mode == 'coins':
+                summary = f'Coin scan: {seen} listings checked; {new} newly found.'
+            elif mode == 'dealers':
+                summary = f'Dealer scan: {candidates} dealer candidates.'
+            else:
+                summary = f'Combined scan: {seen} listings checked; {new} newly found; {candidates} dealer candidates.'
+            if web_queries:
+                notes.append(f'Wider web: {web_queries} searches attempted; {web_leads} potential matches saved.')
+            if notes:
+                summary += '\n' + '\n'.join(notes)
             if errors:
                 summary += '\n' + '\n'.join(errors)
             self.db.finish_run(run_id, status, summary)
             self.progress(phase='Idle', source='', last_error='\n'.join(errors))
-        return {'status': status, 'summary': summary, 'seen': seen, 'new': new, 'candidates': candidates, 'errors': errors}
+        return {'status': status, 'mode': mode, 'search_id': search_id, 'summary': summary, 'seen': seen, 'new': new,
+                'candidates': candidates, 'matches': matches, 'web_queries': web_queries, 'web_leads': web_leads, 'errors': errors}

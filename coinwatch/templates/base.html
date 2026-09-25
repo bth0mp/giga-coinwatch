@@ -15,23 +15,30 @@
       <a class="brand" href="/" aria-label="giga-coinwatch home"><span class="brand-mark" aria-hidden="true">G</span><span>giga-coinwatch</span></a>
       <nav class="main-nav" aria-label="Main navigation">
         <a href="/" {% if page == 'listings' %}aria-current="page"{% endif %}>Coins</a>
+        <a href="/wanted" {% if page == 'wanted' %}aria-current="page"{% endif %}>Wanted coins</a>
         <a href="/sources" {% if page == 'sources' %}aria-current="page"{% endif %}>Sources</a>
         <a href="/discoveries" {% if page == 'discoveries' %}aria-current="page"{% endif %}>Discoveries</a>
         <a href="/history" {% if page == 'history' %}aria-current="page"{% endif %}>History</a>
         <a href="/settings" {% if page == 'settings' %}aria-current="page"{% endif %}>Settings</a>
       </nav>
-      <form class="scan-form" action="/scan" method="post">
-        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-        <button class="button button-primary" data-scan-button type="submit" {% if runtime.running %}disabled{% endif %}>{{ 'Scanning…' if runtime.running else 'Scan now' }}</button>
-      </form>
     </div>
   </header>
   <main class="shell" id="main">
     <div class="utility-row">
       <div class="system-status" role="status" aria-live="polite"><span class="status-light {{ 'busy' if runtime.running else '' }}" data-status-light aria-hidden="true"></span>
-        <span data-scan-status>{% if runtime.running %}Scanning{% if runtime.source %}: {{ runtime.source }}{% endif %}{% else %}Ready{% endif %}</span>
+        <span data-scan-status>{% if runtime.running %}{{ {'coins': 'Scanning coins', 'dealers': 'Finding dealers', 'both': 'Scanning coins and dealers'}.get(runtime.mode, 'Scanning') }}{% if runtime.source %}: {{ runtime.source }}{% endif %}{% else %}Ready{% endif %}</span>
       </div>
       <p>Daily scan: {{ settings.scan_time }} {{ settings.timezone }}</p>
+    </div>
+    <div class="scan-toolbar" aria-label="Scan controls">
+      <p>Refresh monitored stock or look for more fixed-price dealers.</p>
+      <form class="scan-controls" action="/scan" method="post">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <input type="hidden" name="return_to" value="{{ scan_return_to }}">
+        <button class="button button-secondary" data-scan-button type="submit" name="mode" value="coins" {% if runtime.running %}disabled{% endif %}>Scan coins</button>
+        <button class="button button-secondary" data-scan-button type="submit" name="mode" value="dealers" {% if runtime.running %}disabled{% endif %}>Find dealers</button>
+        <button class="button button-primary" data-scan-button type="submit" name="mode" value="both" {% if runtime.running %}disabled{% endif %}>Scan both</button>
+      </form>
     </div>
     {% if runtime.running and request.query_params.get('scan') == 'started' %}<div class="notice" data-scan-notice role="status">Scan started. Progress updates here; results refresh when it finishes.</div>{% endif %}
     {% if runtime.running and request.query_params.get('scan') == 'running' %}<div class="notice" data-scan-notice role="status">A scan is already running.</div>{% endif %}

@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import threading
+import pytest
 
 from coinwatch.db import Database
 from coinwatch.models import Listing, ScrapeResult
@@ -66,12 +67,112 @@ def test_scanner_busy_does_not_start_another_run(tmp_path):
     assert len(db.runs()) == 1
 
 
+@pytest.mark.parametrize('mode,listing_count,candidate_count', [('coins', 1, 0), ('dealers', 0, 1), ('both', 1, 1)])
+def test_scan_modes_only_run_selected_work(tmp_path, monkeypatch, mode, listing_count, candidate_count):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([dict(id='shop', name='Shop', url='https://shop.example', adapter='test', enabled=True)])
+    def scrape(source, fetcher):
+        return ScrapeResult([Listing('a', 'https://shop.example/a', 'Athens tetradrachm', '50', 'GBP')], 1)
+    monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [
+        dict(url='https://dealer.example/', name='New dealer', reason='Ancient coins with fixed prices')])
+    result = Scanner(db, scrape=scrape).run(mode=mode)
+    assert result['status'] == 'complete'
+    assert result['mode'] == mode
+    assert db.list_listings(view='all')[1] == listing_count
+    assert len(db.list_candidates()) == candidate_count
+    assert db.runs()[0]['kind'] == f'manual-{mode}'
+    if mode == 'dealers':
+        assert db.get_source('shop')['last_attempt'] is None
+        assert 'listings checked' not in result['summary']
+    elif mode == 'coins':
+        assert 'dealer candidates' not in result['summary']
+
+
+@pytest.mark.parametrize('options', [{'mode':'invalid'}, {'mode':'dealers', 'include_discovery':False}])
+def test_invalid_scan_mode_does_not_claim_a_run(tmp_path, options):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    with pytest.raises(ValueError):
+        Scanner(db).run(**options)
+    assert db.runs() == []
+
+
+def test_legacy_no_discovery_records_coin_scan(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    def unexpected_discovery(*args, **kwargs):
+        raise AssertionError('Coin-only scan started dealer discovery')
+    monkeypatch.setattr('coinwatch.discovery.discover', unexpected_discovery)
+    result = Scanner(db).run(include_discovery=False)
+    assert result['status'] == 'complete'
+    assert result['mode'] == 'coins'
+    assert db.runs()[0]['kind'] == 'manual-coins'
+
+
+@pytest.mark.parametrize('mode', ['coins', 'dealers'])
+def test_single_purpose_manual_scan_does_not_consume_daily_combined_occurrence(tmp_path, monkeypatch, mode):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    monkeypatch.setattr('coinwatch.runtime.schedule_state', lambda _: {'due':True,'occurrence':'2026-09-25','next_due':'2026-09-26T08:00:00+00:00'})
+    monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [])
+    Runtime(db)._work('manual', mode)
+    assert db.runs()[0]['status'] == 'complete'
+    assert db.settings()['last_scheduled_date'] == ''
+
+
+def test_complete_manual_combined_scan_consumes_daily_occurrence(tmp_path, monkeypatch):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    monkeypatch.setattr('coinwatch.runtime.schedule_state', lambda _: {'due':True,'occurrence':'2026-09-25','next_due':'2026-09-26T08:00:00+00:00'})
+    monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [])
+    Runtime(db)._work('manual', 'both')
+    assert db.settings()['last_scheduled_date'] == '2026-09-25'
+
+
+def test_runtime_exposes_mode_and_rejects_overlapping_scans(tmp_path, monkeypatch):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    entered, release = threading.Event(), threading.Event()
+    def discover(*args, **kwargs):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError('Test did not release discovery')
+        return []
+    monkeypatch.setattr('coinwatch.discovery.discover', discover)
+    runtime = Runtime(db)
+    try:
+        assert runtime.start_scan(mode='dealers')
+        assert entered.wait(5)
+        assert runtime.snapshot()['mode'] == 'dealers'
+        assert not runtime.start_scan(mode='coins')
+        assert len(db.runs()) == 1
+    finally:
+        release.set()
+        runtime.stop()
+    assert not runtime.snapshot()['running']
+    assert runtime.snapshot()['mode'] == ''
+
+
+def test_runtime_rejects_invalid_mode_before_starting_worker(tmp_path):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    runtime = Runtime(db)
+    with pytest.raises(ValueError):
+        runtime.start_scan(mode='invalid')
+    assert not runtime.snapshot()['running']
+    assert db.runs() == []
+
+
 def test_failed_manual_scan_does_not_consume_daily_occurrence(tmp_path, monkeypatch):
     from coinwatch.runtime import Runtime
     db = Database(tmp_path/'catalog.db')
     db.initialize([])
     monkeypatch.setattr('coinwatch.runtime.schedule_state', lambda _: {'due':True,'occurrence':'2026-09-25','next_due':'2026-09-26T08:00:00+00:00'})
-    monkeypatch.setattr('coinwatch.runtime.Scanner.run', lambda self,kind: {'status':'failed'})
+    monkeypatch.setattr('coinwatch.runtime.Scanner.run', lambda self,kind,**kwargs: {'status':'failed'})
     Runtime(db)._work('manual')
     assert db.settings()['last_scheduled_date'] == ''
 
@@ -81,6 +182,261 @@ def test_scheduled_failure_is_recorded_without_endless_catchup(tmp_path, monkeyp
     db = Database(tmp_path/'catalog.db')
     db.initialize([])
     monkeypatch.setattr('coinwatch.runtime.schedule_state', lambda _: {'due':True,'occurrence':'2026-09-25','next_due':'2026-09-26T08:00:00+00:00'})
-    monkeypatch.setattr('coinwatch.runtime.Scanner.run', lambda self,kind: {'status':'failed'})
+    monkeypatch.setattr('coinwatch.runtime.Scanner.run', lambda self,kind,**kwargs: {'status':'failed'})
     Runtime(db)._work('scheduled')
     assert db.settings()['last_scheduled_date'] == '2026-09-25'
+
+
+@pytest.mark.parametrize('mode,search_id', [('coins', 123), ('dealers', 123)])
+def test_invalid_wanted_search_does_not_create_scan(tmp_path, mode, search_id):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    with pytest.raises(ValueError):
+        Scanner(db).run(mode=mode, search_id=search_id)
+    assert db.runs() == []
+
+
+def test_runtime_unknown_wanted_search_does_not_start_worker(tmp_path):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    runtime = Runtime(db)
+    with pytest.raises(ValueError):
+        runtime.start_scan(mode='coins', search_id=123)
+    assert not runtime.snapshot()['running']
+    assert db.runs() == []
+
+
+def wanted_search(db, name='Athens owl', **values):
+    fields = dict(name=name, keywords='Athens', include_web=True, enabled=True)
+    fields.update(values)
+    return db.save_search(fields)
+
+
+def test_wanted_scan_queries_only_selected_watch_and_preserves_catalog(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([dict(id='shop', name='Shop', url='https://shop.example', adapter='test', enabled=True)])
+    selected = wanted_search(db)
+    other = wanted_search(db, name='Corinth')
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda query, key: [dict(url='https://example.com/owl', title=query, snippet='Silver owl')])
+    def scrape(source, fetcher):
+        return ScrapeResult([
+            Listing('a', 'https://shop.example/a', 'Athens tetradrachm', '50', 'GBP'),
+            Listing('b', 'https://shop.example/b', 'Corinth stater', '80', 'GBP')], 1)
+    result = Scanner(db, scrape=scrape).run(mode='coins', search_id=selected)
+    assert result['status'] == 'complete'
+    assert result['search_id'] == selected
+    assert result['matches'] == 1
+    assert db.list_listings(view='all')[1] == 2
+    assert db.search_results(selected)['results'][0]['title'] == db.get_search(selected)['web_query']
+    assert db.search_results(other)['status'] == 'idle'
+
+
+def test_wanted_web_scan_requires_both_watch_opt_in_and_key(tmp_path, monkeypatch):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
+    def unexpected_search(*args, **kwargs):
+        raise AssertionError('Web provider was called without configured credentials')
+    monkeypatch.setattr('coinwatch.web_search.search_web', unexpected_search)
+    result = Scanner(db).run(mode='coins')
+    assert result['status'] == 'complete'
+    assert 'configur' in result['summary'].lower()
+    assert db.search_results(watch)['status'] == 'idle'
+    assert Runtime(db).search_results(watch)['status'] == 'unconfigured'
+    db.save_search(dict(db.get_search(watch), include_web=False), search_id=watch)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    result = Scanner(db).run(mode='coins', search_id=watch)
+    assert result['status'] == 'complete'
+    assert db.search_results(watch)['status'] == 'idle'
+
+
+def test_web_queries_rotate_oldest_first_with_five_attempt_limit_and_failure_isolation(tmp_path, monkeypatch):
+    from coinwatch.web_search import WebSearchError
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watches = [wanted_search(db, name=f'Watch {i}', keywords=f'Mint {i}') for i in range(6)]
+    disabled = wanted_search(db, name='Paused watch')
+    db.save_search(dict(db.get_search(disabled), enabled=False), search_id=disabled)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [])
+    attempts = 0
+    def search(query, key):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise WebSearchError('Search quota exhausted. Check provider limits.')
+        return [dict(url='https://example.com/coin', title='Coin lead', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    first = Scanner(db).run('scheduled', mode='both')
+    assert first['status'] == 'partial'
+    states = [db.search_results(watch) for watch in watches]
+    assert sum(bool(state['checked_at']) for state in states) == 5
+    assert sum(state['status'] == 'error' for state in states) == 1
+    assert sum(state['status'] == 'complete' for state in states) == 4
+    assert db.search_results(disabled)['status'] == 'idle'
+    unqueried = next(watch for watch, state in zip(watches, states) if state['status'] == 'idle')
+    next_queries = []
+    def search_again(query, key):
+        next_queries.append(query)
+        return []
+    monkeypatch.setattr('coinwatch.web_search.search_web', search_again)
+    Scanner(db).run(mode='coins')
+    assert next_queries[0] == db.get_search(unqueried)['web_query']
+    assert db.search_results(unqueried)['status'] == 'complete'
+    assert db.search_results(disabled)['status'] == 'idle'
+
+
+def test_dealer_scan_never_queries_wanted_web_searches(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [])
+    def unexpected_search(*args, **kwargs):
+        raise AssertionError('Dealer-only scan attempted a wanted coin search')
+    monkeypatch.setattr('coinwatch.web_search.search_web', unexpected_search)
+    assert Scanner(db).run(mode='dealers')['status'] == 'complete'
+    assert db.search_results(watch)['status'] == 'idle'
+
+
+def test_combined_scan_for_one_watch_does_not_fulfill_daily_scan(tmp_path, monkeypatch):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
+    monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [])
+    monkeypatch.setattr('coinwatch.runtime.schedule_state', lambda _: {'due':True,'occurrence':'2026-09-25','next_due':'2026-09-26T08:00:00+00:00'})
+    Runtime(db)._work('manual', 'both', watch)
+    assert db.runs()[0]['status'] == 'complete'
+    assert db.settings()['last_scheduled_date'] == ''
+
+
+def test_unexpected_provider_error_does_not_persist_secrets(tmp_path, monkeypatch, caplog):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    def broken_search(query, key):
+        raise RuntimeError('transport failed with key=' + key)
+    monkeypatch.setattr('coinwatch.web_search.search_web', broken_search)
+    result = Scanner(db).run(mode='coins')
+    assert result['status'] == 'partial'
+    assert db.search_results(watch)['status'] == 'error'
+    assert 'test-secret' not in str(result)
+    assert 'test-secret' not in str(db.search_results(watch))
+    assert 'test-secret' not in caplog.text
+
+
+def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(tmp_path, monkeypatch):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    entered, release = threading.Event(), threading.Event()
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    def search(query, key):
+        entered.set()
+        if not release.wait(5):
+            raise TimeoutError('Test did not release search')
+        return [dict(url='https://example.com/owl', title='Owl coin', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    runtime = Runtime(db)
+    try:
+        assert runtime.start_scan(mode='coins', search_id=watch)
+        assert entered.wait(5)
+        snapshot = runtime.snapshot()
+        assert snapshot['search_id'] == watch
+        assert 'results' not in snapshot
+        assert not runtime.start_scan(mode='both')
+    finally:
+        release.set()
+        if runtime._worker:
+            runtime._worker.join(timeout=5)
+        runtime.stop()
+    assert runtime.snapshot()['search_id'] is None
+    assert runtime.search_results(watch)['results'][0]['title'] == 'Owl coin'
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
+    assert runtime.search_results(watch)['status'] == 'complete'
+
+
+@pytest.mark.parametrize('change', ['edit', 'delete', 'disable_web'])
+def test_wanted_changes_during_web_request_discard_stale_results_and_continue(tmp_path, monkeypatch, change):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    changed = wanted_search(db)
+    other = wanted_search(db, name='Corinth', keywords='Corinth')
+    old_query = db.get_search(changed)['web_query']
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    def search(query, key):
+        if query == old_query:
+            if change == 'delete':
+                db.delete_search(changed)
+            else:
+                values = db.get_search(changed)
+                values.update(keywords='Alexandria') if change == 'edit' else values.update(include_web=False)
+                db.save_search(values, search_id=changed)
+        return [dict(url='https://example.com/coin', title=query, snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db).run(mode='coins')
+    assert result['status'] == 'complete'
+    assert db.search_results(other)['status'] == 'complete'
+    if change != 'delete':
+        assert db.search_results(changed)['status'] == 'idle'
+        assert db.search_results(changed)['results'] == []
+
+
+def test_selected_watch_deleted_during_scan_completes_without_stale_match_count(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    def search(query, key):
+        db.delete_search(watch)
+        return []
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db).run(mode='coins', search_id=watch)
+    assert result['status'] == 'complete'
+    assert result['matches'] is None
+
+
+@pytest.mark.parametrize('provider_error', [False, True])
+def test_lost_scan_lease_discards_late_web_response_and_stops_later_queries(tmp_path, monkeypatch, provider_error):
+    from coinwatch.web_search import WebSearchError
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    first = wanted_search(db)
+    second = wanted_search(db, name='Corinth', keywords='Corinth')
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    queries = []
+    def search(query, key):
+        queries.append(query)
+        db.finish_run(db.runs()[0]['id'], 'interrupted', 'Application stopped')
+        if provider_error:
+            raise WebSearchError('Provider unavailable')
+        return [dict(url='https://example.com/coin', title='Coin', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db).run(mode='coins')
+    assert result['status'] == 'interrupted'
+    assert len(queries) == 1
+    assert db.search_results(first)['status'] == 'idle'
+    assert db.search_results(second)['status'] == 'idle'
+
+
+def test_stop_during_web_request_does_not_store_late_response(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    stop = threading.Event()
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    def search(query, key):
+        stop.set()
+        return [dict(url='https://example.com/coin', title='Coin', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db, stop_event=stop).run(mode='coins')
+    assert result['status'] == 'interrupted'
+    assert db.search_results(watch)['status'] == 'idle'
