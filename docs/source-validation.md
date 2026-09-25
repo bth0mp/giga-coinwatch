@@ -23,6 +23,19 @@ The installed app completed a full baseline of all five enabled scopes on 25 Sep
 - [Elysium Greek](https://elysiumcoins.com/greek-coins/) and [Roman](https://elysiumcoins.com/roman-coins/) categories returned HTTP 200 but no product cards on the live pages. Older search-index results are not evidence of current stock.
 - CNG's fixed-price shop, FORVM and the other saved dealers remain pending parser and policy validation. Known dealer and reference domains are recorded in `coinwatch/known-domains.json` for discovery deduplication; this does not identify them as working feeds.
 
+## Additional dealer registry import
+
+The 25 September supplementary list supplied 169 links across 166 hostnames. After merging duplicate sites and retaining existing category URLs, 55 dealer/storefront entries were added to the bundled registry (81 entries total). These include 25 ancient/uncleaned dealer entries, 21 mixed-period dealers, six auction/shop candidates and three mixed dealers whose supplied descriptions mention ancient coins. Ken Dorney's VCoins storefront is a separate scope from the general marketplace.
+
+New entries are disabled with monitoring support pending. Auction-only links, modern-only sellers, banknote sellers, inactive shops and other resources are retained as known-domain references instead of active coin feeds. The known-domain list now contains 224 unique hostnames, so discovery does not reintroduce those supplied sites as new. Raw collecting notes remain local and are not published.
+
+A bounded live check established:
+
+- [Minotaur Ancient Coins](https://www.minotaurcoins.com/): an individual [Caracalla tetradrachm](https://www.minotaurcoins.com/product-page/caracalla-syria-seleucia-and-pieria-antioch-ar-tetradrachm-eagle) displayed SGD 150 and a purchase control. Its linked shop needs pagination and extraction validation; the site's old update label is not a seller listing date.
+- [Kinzer Coins' Roman category](https://kinzercoins.com/collections/roman-empire): fixed-price stock exists, but variant availability and representative coin images require careful handling. Terms review and monitoring support remain incomplete.
+- [OCN Antiques](https://ocnantiques.com/): fixed-price ancient stock exists, but [its terms](https://ocnantiques.com/terms-and-conditions/) restrict aggregation/archive collection. Monitoring remains blocked pending permission.
+- [Daybreak Coins](https://daybreakcoins.com/shop): the supplied domain did not resolve during the check. Stock and access remain unverified.
+
 ## Discovery coverage
 
 Discovery inspects at most 20 previously unseen domains in one pass and at most three public pages per domain. It records confirmed fixed-price stock, unclear sites and inaccessible sites so subsequent days advance past them. The caller should include both known source domains and previously recorded discovery domains, including dismissed ones. Every lead retains the directory URL and any direct product/shop evidence URL; an empty evidence URL means no fixed-price ancient stock was confirmed.

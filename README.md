@@ -2,7 +2,7 @@
 
 giga-coinwatch is a self-hosted ancient-coin listing monitor for a personal collection. Its local dashboard shows observed fixed-price listings, scan history, source health and dealer discovery leads. The first full scan of a source records its existing stock; later observations can appear as new coins. A saved source is not necessarily an active scraper: check **Sources** for actual coverage and errors. giga-coinwatch does not search the entire web.
 
-The five enabled dealer scopes are:
+The five dealer scopes enabled by default are:
 
 | Dealer | Monitored stock |
 | --- | --- |
@@ -12,7 +12,7 @@ The five enabled dealer scopes are:
 | MRB Coins | Roman Republic, $35 or less |
 | Edward J. Waddell / Coin.com | Roman Republican silver |
 
-Other sellers remain saved for review. Dealers with restrictions on automated collection stay disabled. Coverage is limited to the categories above, not each shop's full inventory; see [source validation](docs/source-validation.md) for evidence and limitations. Discovery checks public dealer directories and queues additional domains for review, with supporting shop links when it can verify fixed-price ancient stock. Accepting a dealer saves it to Sources; recurring monitoring needs a validated parser.
+The bundled registry contains 81 dealer/storefront entries, including additional ancient and mixed-period sellers saved for review. Dealers with restrictions on automated collection stay disabled. Coverage is limited to the categories above, not each shop's full inventory; see [source validation](docs/source-validation.md) for evidence and limitations. Discovery checks public dealer directories and queues additional domains for review, with supporting shop links when it can verify fixed-price ancient stock. Accepting a dealer saves it to Sources; recurring monitoring needs a validated parser.
 
 Choose **one** running mode for a collection database. Both modes serve the dashboard at <http://127.0.0.1:8000/> and run the daily schedule inside giga-coinwatch. Keep the PC awake for scheduled scans.
 
