@@ -27,7 +27,7 @@
       }
       const count = Number(queryCount.value);
       queryEstimate.textContent = Number.isInteger(count) && count >= 1 && count <= 50
-        ? `Estimate: up to ${count} basic Tavily ${count === 1 ? 'credit' : 'credits'} and ${count * 20} results before duplicates.`
+        ? `Estimate: up to ${count} basic Tavily ${count === 1 ? 'credit' : 'credits'} and ${count * 20} candidate links before sale checks.`
         : 'Choose a whole number from 1 to 50.';
     };
     queryCount.addEventListener('input', updateEstimate);

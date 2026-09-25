@@ -5,6 +5,55 @@ from coinwatch.fetch import FetchError
 from coinwatch.models import Listing
 
 
+def test_only_recent_available_web_sales_are_visible_and_sold_rechecks_hide_them(db):
+    from datetime import datetime, timedelta, timezone
+    from coinwatch.runtime import Runtime
+    now = datetime.now(timezone.utc)
+    watch = db.save_search({'keywords': 'owl', 'include_web': False})
+    def sale(url, status='available', checked=now):
+        return dict(url=url, title='Athens owl', sale_status=status, price='120.00', currency='EUR',
+                    sale_checked_at=checked.isoformat(), sale_reason='Product page checked')
+    db.record_web_search(watch, [sale('https://shop.example/current'),
+        sale('https://shop.example/old', checked=now-timedelta(days=2)),
+        sale('https://shop.example/sold', status='rejected'),
+        dict(url='https://reference.example/article', title='An article')])
+    assert len(db.search_results(watch)['results']) == 4
+    assert [r['url'] for r in Runtime(db).search_results(watch)['results']] == ['https://shop.example/current']
+    db.record_web_search(watch, [sale('https://shop.example/current', status='rejected')], merge=True)
+    assert Runtime(db).search_results(watch)['results'] == []
+
+
+def test_web_sale_merge_does_not_refresh_old_verification_and_rejects_invalid_price(db):
+    from datetime import datetime, timedelta, timezone
+    checked = (datetime.now(timezone.utc)-timedelta(days=2)).isoformat()
+    watch = db.save_search({'keywords': 'owl'})
+    old = dict(url='https://shop.example/old', title='Owl', sale_status='available', price='120',
+               currency='GBP', sale_checked_at=checked)
+    db.record_web_search(watch, [old])
+    db.record_web_search(watch, [dict(url='https://shop.example/new', title='Unchecked')], merge=True)
+    assert db.search_results(watch, verified_only=True)['results'] == []
+    for price in ('NaN', '0', '-1', 'free'):
+        with pytest.raises(ValueError):
+            db.record_web_search(watch, [{**old, 'price': price}])
+
+
+def test_existing_web_results_migrate_as_unverified_without_data_loss(tmp_path):
+    import sqlite3
+    path = tmp_path / 'old.db'
+    old = Database(path)
+    old.initialize([])
+    watch = old.save_search({'keywords': 'owl'})
+    with sqlite3.connect(path) as connection:
+        connection.execute('DROP TABLE search_web_results')
+        connection.execute('CREATE TABLE search_web_results (search_id INTEGER, url TEXT, title TEXT, snippet TEXT, first_seen TEXT, last_seen TEXT, position INTEGER, PRIMARY KEY(search_id,url))')
+        connection.execute("INSERT INTO search_web_results VALUES(?, 'https://shop.example/coin', 'Owl', 'Old lead', '2026-01-01', '2026-01-01', 0)", (watch,))
+    old.initialize([])
+    old.initialize([])
+    rows = old.search_results(watch)['results']
+    assert len(rows) == 1 and rows[0]['sale_status'] == 'unverified'
+    assert old.search_results(watch, verified_only=True)['results'] == []
+
+
 @pytest.fixture
 def db(tmp_path):
     db = Database(tmp_path / 'catalog.db')

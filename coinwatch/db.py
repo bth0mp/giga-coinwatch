@@ -96,6 +96,14 @@ class Database:
                   first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, position INTEGER NOT NULL,
                   PRIMARY KEY(search_id,url));
             ''')
+            web_columns = {row['name'] for row in c.execute('PRAGMA table_info(search_web_results)')}
+            for name, definition in {
+                'sale_status': "TEXT NOT NULL DEFAULT 'unverified'", 'price': "TEXT NOT NULL DEFAULT ''",
+                'currency': "TEXT NOT NULL DEFAULT ''", 'sale_checked_at': "TEXT NOT NULL DEFAULT ''",
+                'sale_reason': "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in web_columns:
+                    c.execute(f'ALTER TABLE search_web_results ADD COLUMN {name} {definition}')
             for s in seeds:
                 c.execute('INSERT OR IGNORE INTO sources(id,name,url,adapter,enabled,note) VALUES(?,?,?,?,?,?)',
                           (s['id'], s['name'], s['url'], s.get('adapter') or '', bool(s.get('enabled')), s.get('note', '')))
@@ -259,7 +267,26 @@ class Database:
                 params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
                           if not k.lower().startswith('utm_') and k.lower() not in ('fbclid', 'gclid')]
                 url = urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(params), ''))
-                clean.setdefault(url, (str(result.get('title') or url)[:500], str(result.get('snippet') or '')[:500]))
+                sale_status = result.get('sale_status', 'unverified')
+                if sale_status not in ('available', 'rejected', 'unverified'):
+                    raise ValueError('Invalid web sale status')
+                price, currency, checked = str(result.get('price') or ''), str(result.get('currency') or '').upper(), ''
+                if result.get('sale_checked_at'):
+                    date = datetime.fromisoformat(str(result['sale_checked_at']).replace('Z', '+00:00'))
+                    if date.tzinfo is None:
+                        raise ValueError('Sale checks need a time zone')
+                    checked = date.astimezone(timezone.utc).isoformat(timespec='seconds')
+                if sale_status == 'available':
+                    try:
+                        amount = Decimal(price)
+                        if not amount.is_finite() or amount <= 0:
+                            raise InvalidOperation
+                    except InvalidOperation:
+                        raise ValueError('An available web listing needs a positive fixed price') from None
+                    if not re.fullmatch('[A-Z]{3}', currency) or not checked:
+                        raise ValueError('An available web listing needs a currency and check time')
+                clean.setdefault(url, (str(result.get('title') or url)[:500], str(result.get('snippet') or '')[:500],
+                                       sale_status, price[:50], currency[:3], checked, str(result.get('sale_reason') or '')[:500]))
         with self.connect() as c:
             c.execute('BEGIN IMMEDIATE')
             if run_id is not None:
@@ -274,24 +301,30 @@ class Database:
                 raise ValueError('Wanted search not found')
             if results is not None or error is None:
                 previous = {row['url']: dict(row) for row in c.execute('SELECT * FROM search_web_results WHERE search_id=? ORDER BY position', (search_id,))}
-                combined = {url: (title, snippet, previous.get(url, {}).get('first_seen', now), now)
-                            for url, (title, snippet) in clean.items()}
+                combined = {url: (*values[:2], previous.get(url, {}).get('first_seen', now), now, *values[2:])
+                            for url, values in clean.items()}
                 if merge or error is not None:
                     for url, row in previous.items():
-                        combined.setdefault(url, (row['title'], row['snippet'], row['first_seen'], row['last_seen']))
+                        combined.setdefault(url, tuple(row[key] for key in ('title', 'snippet', 'first_seen', 'last_seen',
+                                                                            'sale_status', 'price', 'currency', 'sale_checked_at', 'sale_reason')))
                 c.execute('DELETE FROM search_web_results WHERE search_id=?', (search_id,))
                 for position, (url, values) in enumerate(list(combined.items())[:1000]):
-                    c.execute('INSERT INTO search_web_results VALUES(?,?,?,?,?,?,?)',
+                    c.execute('INSERT INTO search_web_results(search_id,url,title,snippet,first_seen,last_seen,sale_status,price,currency,sale_checked_at,sale_reason,position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                               (search_id, url, *values, position))
             status = 'complete' if error is None else ('partial' if results is not None else 'error')
             c.execute('UPDATE wanted_searches SET web_status=?,web_error=?,web_checked_at=? WHERE id=?',
                       (status, str(error or '')[:500], now, search_id))
         return True
 
-    def search_results(self, search_id):
+    def search_results(self, search_id, *, verified_only=False):
         search = self.get_search(search_id)
         with self.connect() as c:
-            rows = [dict(r) for r in c.execute('SELECT * FROM search_web_results WHERE search_id=? ORDER BY position', (search_id,))]
+            where, args = 'search_id=?', [search_id]
+            if verified_only:
+                cutoff = (datetime.now(timezone.utc)-timedelta(hours=24)).isoformat(timespec='seconds')
+                where += " AND sale_status='available' AND sale_checked_at>=? AND sale_checked_at<=?"
+                args.extend((cutoff, utcnow()))
+            rows = [dict(r) for r in c.execute('SELECT * FROM search_web_results WHERE ' + where + ' ORDER BY position', args)]
         return dict(status=search['web_status'], results=rows, error=search['web_error'], checked_at=search['web_checked_at'])
 
     def stats(self):

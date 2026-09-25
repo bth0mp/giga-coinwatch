@@ -5,13 +5,13 @@
 {% set first_search = searches[0] if searches else none %}
 <section class="panel search-launch" aria-labelledby="run-search-heading">
   <h2 id="run-search-heading">Run a search</h2>
-  <p>Choose your saved criteria and set how many web queries to run. Each basic query uses one Tavily credit, not AI tokens, and tries different search wording for up to 20 links. Daily scans keep one web query per search.</p>
+  <p>Choose your saved criteria and set how many web queries to run. Each basic query uses one Tavily credit, not AI tokens, and tries different search wording for up to 20 candidate links before sale checks. Only verified for-sale listings appear in your web results. Daily scans keep one web query per search.</p>
   <form action="/search/scan" method="post" class="search-launch-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label class="saved-search-select"><span>Saved search</span><select name="search_id" data-search-select required {% if not searches %}disabled{% endif %}>{% for saved in searches %}<option value="{{ saved.id }}" data-include-web="{{ 'true' if saved.include_web else 'false' }}" data-edit-url="/wanted/{{ saved.id }}">{{ saved.name }}{{ ' (daily paused)' if not saved.enabled else '' }}</option>{% else %}<option value="">Create a search below</option>{% endfor %}</select></label>
     <label class="search-query-count"><span>Web queries</span><input type="number" name="web_queries" min="1" max="50" step="1" value="5" required data-web-query-count aria-describedby="search-query-estimate" {% if not first_search or not first_search.include_web %}disabled{% endif %}></label>
     <button class="button button-primary" type="submit" data-scan-button data-requires-search {% if runtime.running or not searches %}disabled{% endif %}>Search now</button>
-    <p class="form-help search-launch-help" id="search-query-estimate" data-web-query-estimate aria-live="polite">{% if not first_search %}Create a search below to choose what to look for.{% elif not first_search.include_web %}Wider-web checking is off for this search. Search now refreshes monitored stock only. Enable the wider web when editing this search.{% else %}Estimate: up to 5 basic Tavily credits and 100 results before duplicates.{% endif %}</p>
+    <p class="form-help search-launch-help" id="search-query-estimate" data-web-query-estimate aria-live="polite">{% if not first_search %}Create a search below to choose what to look for.{% elif not first_search.include_web %}Wider-web checking is off for this search. Search now refreshes monitored stock only. Enable the wider web when editing this search.{% else %}Estimate: up to 5 basic Tavily credits and 100 candidate links before sale checks.{% endif %}</p>
   </form>
   <div class="search-launch-links"><a class="text-link" href="{{ '/wanted/' ~ first_search.id if first_search else '#new-search-heading' }}" data-search-criteria-link {% if not first_search %}hidden{% endif %}>View or edit selected criteria</a><a class="text-link" href="#new-search-heading">Create a new search</a></div>
 </section>

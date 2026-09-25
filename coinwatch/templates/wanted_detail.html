@@ -1,15 +1,16 @@
 {% extends "base.html" %}
 {% block title %}{{ search.name }}{% endblock %}
 {% block content %}
+{% set visible_sales = web_results.results|selectattr('sale_status', 'defined')|selectattr('sale_status', 'equalto', 'available')|list %}
 <div class="page-heading"><div><a class="text-link back-link" href="/search">Back to Search</a><h1>{{ search.name }}</h1><p>{{ 'Included in daily coin scans.' if search.enabled else 'Daily checking is paused for this search.' }}</p></div>
   <form class="wanted-scan-form" action="/wanted/{{ search.id }}/scan" method="post">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="wanted-scan-inputs"><label><span>Web queries</span><input type="number" name="web_queries" min="1" max="50" step="1" value="5" required data-web-query-count aria-describedby="web-query-help" {% if not search.include_web %}disabled{% endif %}></label><button class="button button-primary" data-scan-button type="submit" {% if runtime.running %}disabled{% endif %}>Scan for this search</button></div>
-    <p class="form-help" id="web-query-help">{% if search.include_web %}<span data-web-query-estimate aria-live="polite">Estimate: up to 5 basic Tavily credits and 100 results before duplicates.</span> Daily scans use one web query per search.{% else %}Web checking is off, so this scan only refreshes monitored stock. Enable the wider web under Edit search to choose a query count.{% endif %}</p>
+    <p class="form-help" id="web-query-help">{% if search.include_web %}<span data-web-query-estimate aria-live="polite">Estimate: up to 5 basic Tavily credits and 100 candidate links before sale checks.</span> Daily scans use one web query per search.{% else %}Web checking is off, so this scan only refreshes monitored stock. Enable the wider web under Edit search to choose a query count.{% endif %}</p>
   </form>
 </div>
 <details class="panel search-edit"><summary>Edit search</summary>{% include "search_form.html" %}
-  <details class="delete-search"><summary>Delete this search</summary><p>This removes the saved search and its web leads. Catalog coins and saved coins stay in your collection.</p><form action="/wanted/{{ search.id }}/delete" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit">Delete search</button></form></details>
+  <details class="delete-search"><summary>Delete this search</summary><p>This removes the saved search and its web results. Catalog coins and saved coins stay in your collection.</p><form action="/wanted/{{ search.id }}/delete" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><button class="button button-secondary" type="submit">Delete search</button></form></details>
 </details>
 <section aria-labelledby="monitored-matches-heading">
   <div class="section-heading-row"><h2 id="monitored-matches-heading">Monitored dealers</h2><span class="muted">{{ total }} available {{ 'match' if total == 1 else 'matches' }}</span></div>
@@ -17,16 +18,17 @@
   {% if rows %}{% include "coin_results.html" %}{% else %}<div class="empty-state"><h3>No available matches yet</h3><p>Try fewer keywords, increase your price limit, or scan monitored dealers for new stock.</p></div>{% endif %}
 </section>
 <section class="web-search-section" aria-labelledby="web-results-heading">
-  <div class="section-heading-row"><h2 id="web-results-heading">Wider web</h2>{% if search.web_url|safe_url %}<a class="text-link" href="{{ search.web_url|safe_url }}" target="_blank" rel="noopener noreferrer">Open web search</a>{% endif %}</div>
-  <p class="muted">Search the indexed public web worldwide, including shops you haven’t added. More queries explore different search wording; no scan can cover every website. Each query can return up to 20 results.</p>
-  <p class="muted">Web leads can include auctions, sold coins or pages with no price. Check the seller’s page before treating a lead as an available fixed-price listing.</p>
+  <div class="section-heading-row"><h2 id="web-results-heading">For sale on wider web</h2>{% if search.web_url|safe_url %}<a class="text-link" href="{{ search.web_url|safe_url }}" target="_blank" rel="noopener noreferrer">Open web search</a>{% endif %}</div>
+  <p class="muted">Search the indexed public web worldwide, including shops you haven’t added. Each query returns up to 20 candidate links for sale checks; no scan covers every website.</p>
+  <p class="muted">Only individual fixed-price coin listings with a price and evidence they were available to buy at the last check appear here. Auctions, sold coins, information pages and listings we cannot verify are hidden.</p>
+  <p class="muted">Availability checks older than 24 hours are hidden until a later scan rechecks them. Availability can change after a check.</p>
   {% if not search.include_web %}<div class="notice">Wider-web checking is off for this search. Enable it under Edit search.</div>
-  {% elif web_results.status == 'unconfigured' %}<div class="notice">Add a Tavily API key in <a href="/settings#web-search">Settings</a> to find web leads automatically. Monitored-dealer matching works without a key.</div>
-  {% elif web_results.status == 'running' %}<div class="notice" role="status">Looking for matching web leads…</div>
-  {% elif web_results.status == 'partial' %}<div class="notice notice-error" role="alert">Some web queries could not complete. Leads from successful queries and earlier scans are kept. {{ web_results.error }}</div>
+  {% elif web_results.status == 'unconfigured' %}<div class="notice">Add a Tavily API key in <a href="/settings#web-search">Settings</a> to find coins for sale on the wider web automatically. Monitored-dealer matching works without a key.</div>
+  {% elif web_results.status == 'running' %}<div class="notice" role="status">Searching the wider web and checking listings for sale…</div>
+  {% elif web_results.status == 'partial' %}<div class="notice notice-error" role="alert">Some web checks could not complete. Only listings with current availability checks are shown. {{ web_results.error }}</div>
   {% elif web_results.status == 'error' %}<div class="notice notice-error" role="alert">Web search could not complete. {{ web_results.error }}</div>
-  {% elif not web_results.results %}<div class="empty-state"><h3>{{ 'No web leads found' if web_results.status == 'complete' else 'No web search yet' }}</h3><p>{{ 'Try fewer or broader keywords.' if web_results.status == 'complete' else 'Use Scan for this search to check the wider web.' }}</p></div>{% endif %}
-  {% if web_results.checked_at %}<p class="result-count">Last web scan {{ web_results.checked_at|local_time(settings.timezone) }}. Earlier leads stay here; this scan may not have returned every lead again.</p>{% endif %}
-  {% if web_results.results %}<p class="result-count">{{ web_results.results|length }} retained {{ 'lead' if web_results.results|length == 1 else 'leads' }} across {{ web_domain_count }} {{ 'domain' if web_domain_count == 1 else 'domains' }}. Duplicate URLs are combined.</p><div class="web-leads">{% for lead in web_results.results %}<article class="web-lead"><h3>{% if lead.url|safe_url %}<a href="{{ lead.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ lead.title }}</a>{% else %}{{ lead.title }}{% endif %}</h3><p>{{ lead.snippet }}</p><span class="muted">Unverified web lead{% if lead.last_seen %} · Last found {{ lead.last_seen|local_time(settings.timezone) }}{% endif %}</span></article>{% endfor %}</div>{% endif %}
+  {% elif not visible_sales %}<div class="empty-state"><h3>No verified for-sale listings yet</h3><p>{{ 'Try broader keywords or scan again to check more listings.' if web_results.status == 'complete' else 'Use Scan for this search to find and check listings on the wider web.' }}</p></div>{% endif %}
+  {% if web_results.checked_at %}<p class="result-count">Last web scan {{ web_results.checked_at|local_time(settings.timezone) }}. Each listing shows when its availability was checked.</p>{% endif %}
+  {% if visible_sales %}<p class="result-count">{{ visible_sales|length }} for-sale {{ 'listing' if visible_sales|length == 1 else 'listings' }} across {{ web_domain_count }} {{ 'domain' if web_domain_count == 1 else 'domains' }}. Duplicate URLs are combined.</p><div class="web-leads">{% for lead in visible_sales %}<article class="web-lead"><h3>{% if lead.url|safe_url %}<a href="{{ lead.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ lead.title }}</a>{% else %}{{ lead.title }}{% endif %}</h3><p class="coin-price">{{ lead.currency }} {{ lead.price }}</p><span class="muted">Availability checked {{ lead.sale_checked_at|local_time(settings.timezone) }}</span></article>{% endfor %}</div>{% endif %}
 </section>
 {% endblock %}

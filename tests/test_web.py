@@ -164,7 +164,7 @@ def test_wanted_search_create_edit_match_and_scan(tmp_path):
     assert detail.status_code == 200
     assert "Denarius &lt;script&gt;alert(1)&lt;/script&gt;" in detail.text
     assert "Old coin" not in detail.text
-    assert "Wider web" in detail.text
+    assert "For sale on wider web" in detail.text
     assert "My denarii" in client.get("/wanted").text
     response = client.post(f"/wanted/{search['id']}/scan", data=token(db))
     assert response.status_code == 303
@@ -207,21 +207,24 @@ def test_web_search_key_is_saved_locally_never_rendered_and_clearable(tmp_path, 
     assert provider_settings(tmp_path)["configured"] is False
 
 
-def test_wanted_web_leads_are_escaped_and_not_misrepresented_as_catalog_coins(tmp_path):
+def test_wanted_for_sale_web_listings_escape_titles_and_omit_search_snippets(tmp_path):
     client, db, runtime = setup_catalog(tmp_path)
     response = client.post("/wanted", data={**token(db), "name": "Athens", "mint": "Athens", "include_web": "true"})
     assert response.status_code == 303
     runtime.web_results = {"status": "complete", "results": [
-        {"title": "Owl <script>bad()</script>", "url": "https://shop.example/coin", "snippet": "A silver <b>coin</b>"},
-        {"title": "Unsafe result", "url": "javascript:alert(1)", "snippet": "Unverified price"},
+        {"title": "Owl <script>bad()</script>", "url": "https://shop.example/coin", "snippet": "A silver <b>coin</b>",
+         "sale_status": "available", "price": "275.00", "currency": "EUR", "sale_checked_at": "2026-09-25T11:30:00+00:00"},
+        {"title": "Unsafe result", "url": "javascript:alert(1)", "snippet": "Unverified price",
+         "sale_status": "available", "price": "300.00", "currency": "EUR", "sale_checked_at": "2026-09-25T11:30:00+00:00"},
     ], "error": "", "checked_at": "2026-09-25T12:00:00+00:00"}
     detail = client.get(response.headers["location"])
     assert detail.status_code == 200
     assert 'href="https://shop.example/coin"' in detail.text
     assert "Owl &lt;script&gt;bad()&lt;/script&gt;" in detail.text
-    assert "A silver &lt;b&gt;coin&lt;/b&gt;" in detail.text
+    assert "A silver" not in detail.text
+    assert "EUR 275.00" in detail.text
     assert "javascript:" not in detail.text
-    assert "Unverified web lead" in detail.text
+    assert "Availability checked 25 Sep 2026, 12:30" in detail.text
     assert db.list_listings(view="all")[1] == 2
 
 
@@ -288,15 +291,33 @@ def test_wanted_scan_disables_web_budget_when_web_search_is_off(tmp_path):
     assert client.post(f"/wanted/{search_id}/scan", data=token(db)).status_code == 303
 
 
-def test_wanted_web_results_count_valid_domains_and_show_retained_lead_dates(tmp_path):
+def test_wanted_web_results_count_for_sale_domains_and_show_availability_check_dates(tmp_path):
     client, db, runtime = setup_catalog(tmp_path)
     search_id = db.save_search({"name": "Athens", "mint": "Athens", "include_web": True})
     runtime.web_results = {"status": "complete", "results": [
-        {"title": "Owl A", "url": "https://shop.example/a", "snippet": "Coin", "last_seen": "2026-09-25T12:00:00+00:00"},
-        {"title": "Owl B", "url": "https://www.shop.example/b", "snippet": "Coin"},
-        {"title": "Owl C", "url": "https://other.example/c", "snippet": "Coin"},
+        {"title": "Owl A", "url": "https://shop.example/a", "snippet": "Coin", "last_seen": "2026-09-25T12:00:00+00:00",
+         "sale_status": "available", "price": "275.00", "currency": "GBP", "sale_checked_at": "2026-09-25T10:30:00+00:00"},
+        {"title": "Owl B", "url": "https://www.shop.example/b", "snippet": "Coin",
+         "sale_status": "available", "price": "300.00", "currency": "GBP", "sale_checked_at": "2026-09-25T10:30:00+00:00"},
+        {"title": "Owl C", "url": "https://other.example/c", "snippet": "Coin",
+         "sale_status": "available", "price": "325.00", "currency": "GBP", "sale_checked_at": "2026-09-25T10:30:00+00:00"},
     ], "error": "", "checked_at": "2026-09-25T12:00:00+00:00"}
     response = client.get(f"/wanted/{search_id}")
     assert response.status_code == 200
-    assert "3 retained leads across 2 domains" in response.text
-    assert "Last found 25 Sep 2026, 13:00" in response.text
+    assert "3 for-sale listings across 2 domains" in response.text
+    assert "Availability checked 25 Sep 2026, 11:30" in response.text
+    assert "Availability checked 25 Sep 2026, 13:00" not in response.text
+
+
+def test_for_sale_template_hides_old_unchecked_results_during_runtime_upgrade(tmp_path):
+    client, db, runtime = setup_catalog(tmp_path)
+    search_id = db.save_search({"name": "Athens", "mint": "Athens", "include_web": True})
+    runtime.web_results = {"status": "complete", "results": [
+        {"title": "Old unchecked lead", "url": "https://shop.example/unchecked", "snippet": "Old search result"},
+        {"title": "Sold owl", "url": "https://shop.example/sold", "sale_status": "sold"},
+    ], "error": "", "checked_at": "2026-09-25T12:00:00+00:00"}
+    response = client.get(f"/wanted/{search_id}")
+    assert response.status_code == 200
+    assert "Old unchecked lead" not in response.text
+    assert "Sold owl" not in response.text
+    assert "No verified for-sale listings yet" in response.text

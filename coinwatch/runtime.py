@@ -61,7 +61,7 @@ class Runtime:
     def search_results(self, search_id):
         from .web_search import WebSearchError, load_api_key
         search = self.db.get_search(search_id)
-        result = self.db.search_results(search_id)
+        result = self.db.search_results(search_id, verified_only=True)
         if search['include_web']:
             try:
                 api_key = load_api_key(self.db.path.parent)

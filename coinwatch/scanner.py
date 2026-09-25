@@ -1,5 +1,6 @@
 import logging
 import threading
+import time
 from urllib.parse import urlsplit
 
 from .fetch import Fetcher
@@ -41,6 +42,7 @@ class Scanner:
         self.run_id = None
 
     def _scan_web(self, searches, errors, notes, query_limit=1):
+        from .sale_checks import verify_sale
         from .searches import web_query_variants
         from .web_search import WebSearchError, load_api_key, search_web
         searches = [search for search in searches if search['include_web']]
@@ -50,28 +52,78 @@ class Scanner:
             api_key = load_api_key(self.db.path.parent)
         except WebSearchError as e:
             errors.append(f'Wider web search: {e}')
-            return 0, 0
+            api_key = ''
         if not api_key:
-            notes.append('Wider web search skipped: configure a Tavily API key in Settings to enable it.')
-            return 0, 0
+            notes.append('New wider-web queries skipped: configure a Tavily API key in Settings to enable them. Retained listings can still be checked.')
         if len(searches) > 5:
             notes.append(f'Wider web search is limited to five wanted searches per scan; {len(searches) - 5} remain for a later scan.')
-        queries, leads = 0, 0
+        sale_fetcher = Fetcher(stop_event=self.stop_event, budget=600)
+        cache, stored, changed = {}, {}, set()
+        queries, budget_reached = 0, False
+        budget_message = 'Wanted-sale verification reached its 600-second budget; remaining wanted-search queries and page checks were skipped.'
+
+        def can_work(search):
+            if self.stop_event.is_set() or not self.db.renew_lease(self.run_id):
+                self.stop_event.set()
+                return False
+            try:
+                current = self.db.get_search(search['id'])
+            except ValueError:
+                current = None
+            if not current or not current['include_web'] or current['web_query'] != search['web_query']:
+                if search['id'] not in changed:
+                    notes.append(f"Wanted search \"{search['name']}\" changed or was removed; remaining web work was skipped.")
+                    changed.add(search['id'])
+                return False
+            return True
+
+        def has_budget():
+            nonlocal budget_reached
+            if time.monotonic() < sale_fetcher.deadline:
+                return True
+            if not budget_reached:
+                errors.append(budget_message)
+                budget_reached = True
+            return False
+
         for search in searches[:5]:
-            if self.stop_event.is_set():
+            if self.stop_event.is_set() or budget_reached:
                 break
-            variants = web_query_variants(search, query_limit) if query_limit > 1 else [search['web_query']]
-            gathered, search_errors, successful, saved_count = {}, [], False, 0
+            if not can_work(search):
+                continue
+            try:
+                retained = self.db.search_results(search['id'])['results']
+            except ValueError:
+                continue
+            variants = (web_query_variants(search, query_limit) if query_limit > 1 else [search['web_query']]) if api_key else []
+            gathered, search_errors, successful = {}, [], False
+
+            def assess(row):
+                if not can_work(search) or not has_budget():
+                    return False
+                url = row['url']
+                if url not in cache:
+                    self.progress(phase='Checking sale listings', source=search['name'])
+                    cache[url] = verify_sale(row, sale_fetcher)
+                    has_budget()
+                gathered[url] = cache[url]
+                return True
+
+            def checkpoint():
+                if not can_work(search):
+                    return False
+                message = '; '.join(search_errors + ([budget_message] if budget_reached else [])) or None
+                recorded = self.db.record_web_search(
+                    search['id'], list(gathered.values()) if successful else None,
+                    message, expected_query=search['web_query'], run_id=self.run_id, merge=True)
+                if not recorded:
+                    can_work(search)
+                    return False
+                stored.update(gathered)
+                return True
+
             for index, query in enumerate(variants):
-                if self.stop_event.is_set() or not self.db.renew_lease(self.run_id):
-                    self.stop_event.set()
-                    break
-                try:
-                    current = self.db.get_search(search['id'])
-                except ValueError:
-                    current = None
-                if not current or not current['include_web'] or current['web_query'] != search['web_query']:
-                    notes.append(f"Wanted search \"{search['name']}\" changed or was removed; remaining web queries were skipped.")
+                if not can_work(search) or not has_budget():
                     break
                 self.progress(phase=f'Searching the wider web ({index + 1}/{len(variants)})', source=search['name'])
                 options = {'max_results': 20}
@@ -94,28 +146,37 @@ class Scanner:
                 else:
                     successful = True
                     for result in results:
-                        gathered.setdefault(result['url'], result)
-                if self.stop_event.is_set():
-                    break
+                        if not assess(result):
+                            break
                 if error:
                     search_errors.append(error)
-                recorded = self.db.record_web_search(
-                    search['id'], list(gathered.values()) if successful else None,
-                    '; '.join(search_errors) or None, expected_query=search['web_query'], run_id=self.run_id, merge=True)
-                if not recorded:
-                    if not self.db.renew_lease(self.run_id):
-                        self.stop_event.set()
-                    else:
-                        notes.append(f"Wanted search \"{search['name']}\" changed or was removed; its outdated web response was discarded.")
+                if not checkpoint():
                     break
-                leads += len(gathered) - saved_count
-                saved_count = len(gathered)
                 if error:
                     errors.append(f"{search['name']}: {error}")
                 if halt_broad_scan:
                     notes.append('Remaining broad-search queries were skipped after the provider error.')
                     break
-        return queries, leads
+                if budget_reached:
+                    break
+
+            checked_retained = 0
+            for row in sorted(retained, key=lambda item: item.get('sale_checked_at') or ''):
+                if row['url'] in gathered:
+                    continue
+                if not assess(row):
+                    break
+                successful = True
+                checked_retained += 1
+                if checked_retained % 20 == 0 and not checkpoint():
+                    break
+            if successful or search_errors:
+                checkpoint()
+        if stored:
+            rejected = sum(row['sale_status'] == 'rejected' for row in stored.values())
+            unverified = sum(row['sale_status'] == 'unverified' for row in stored.values())
+            notes.append(f'Sale checks: {rejected} rejected; {unverified} unverified.')
+        return queries, sum(row['sale_status'] == 'available' for row in stored.values())
 
     def _scan_dealers(self, fetcher, errors, notes):
         from .discovery import DEALER_QUERIES, DiscoveryError, discover, discover_web
@@ -227,7 +288,7 @@ class Scanner:
                     else:
                         notes.append(f"Wanted search \"{current_search['name']}\": {matches} matching catalog listings.")
             if mode in ('dealers', 'both') and not self.stop_event.is_set():
-                candidates = self._scan_dealers(fetcher, errors, notes)
+                candidates = self._scan_dealers(Fetcher(stop_event=self.stop_event), errors, notes)
             if self.stop_event.is_set():
                 status = 'interrupted'
             elif errors:
@@ -248,8 +309,8 @@ class Scanner:
                 summary = f'Dealer scan: {candidates} dealer candidates.'
             else:
                 summary = f'Combined scan: {seen} listings checked; {new} newly found; {candidates} dealer candidates.'
-            if web_queries:
-                notes.append(f'Wider web: {web_queries} searches attempted; {web_leads} potential matches saved.')
+            if web_queries or web_leads:
+                notes.append(f'Wider web: {web_queries} searches attempted; {web_leads} fixed-price listings verified available.')
             if notes:
                 summary += '\n' + '\n'.join(notes)
             if errors:

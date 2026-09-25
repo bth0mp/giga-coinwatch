@@ -8,6 +8,18 @@ from coinwatch.runtime import schedule_state
 from coinwatch.scanner import Scanner
 
 
+def sale_result(row, status='available'):
+    return dict(row, sale_status=status, price='50.00' if status == 'available' else '',
+                currency='GBP' if status == 'available' else '',
+                sale_checked_at=datetime.now(timezone.utc).isoformat(), sale_reason='Fixture sale evidence')
+
+
+@pytest.fixture(autouse=True)
+def verified_sale_boundary(monkeypatch):
+    # These tests exercise orchestration; sale_checks tests own page classification.
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', lambda row, fetcher: sale_result(row))
+
+
 def test_schedule_preserves_london_wall_clock_in_summer_and_winter():
     config = {'timezone':'Europe/London','scan_time':'09:00','last_scheduled_date':''}
     summer = schedule_state(config, datetime(2026,9,25,7,59,tzinfo=timezone.utc))
@@ -86,6 +98,29 @@ def test_scan_modes_only_run_selected_work(tmp_path, monkeypatch, mode, listing_
         assert 'listings checked' not in result['summary']
     elif mode == 'coins':
         assert 'dealer candidates' not in result['summary']
+
+
+def test_dealer_discovery_gets_fresh_budget_after_catalog_fetcher_expires(tmp_path, monkeypatch):
+    import time
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([dict(id='shop', name='Shop', url='https://shop.example', adapter='test', enabled=True)])
+    catalog_fetchers, dealer_fetchers = [], []
+    stop = threading.Event()
+    def scrape(source, fetcher):
+        catalog_fetchers.append(fetcher)
+        fetcher.deadline = 0
+        return ScrapeResult([], 1)
+    def discover(fetcher, *args, **kwargs):
+        dealer_fetchers.append(fetcher)
+        return [dict(url='https://dealer.example/', name='New dealer', reason='Ancient coins with fixed prices')]
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
+    monkeypatch.setattr('coinwatch.discovery.discover', discover)
+    result = Scanner(db, scrape=scrape, stop_event=stop).run(mode='both')
+    assert result['status'] == 'complete' and result['candidates'] == 1
+    assert len(catalog_fetchers) == len(dealer_fetchers) == 1
+    assert dealer_fetchers[0] is not catalog_fetchers[0]
+    assert dealer_fetchers[0].deadline > time.monotonic()
+    assert dealer_fetchers[0].stop_event is stop
 
 
 @pytest.mark.parametrize('options', [{'mode':'invalid'}, {'mode':'dealers', 'include_discovery':False}])
@@ -558,7 +593,7 @@ def test_broad_scan_uses_distinct_queries_deduplicates_and_preserves_earlier_lea
     assert result['status'] == 'complete'
     assert len(set(queries)) == 3
     assert result['web_queries'] == 3
-    assert result['web_leads'] == 4
+    assert result['web_leads'] == 5  # Four new URLs plus the rechecked earlier sale.
     assert len(db.search_results(watch)['results']) == 5
     assert '3 searches attempted' in db.runs()[0]['summary']
     # The normal next-day request must keep the broad scan's accumulated leads.
@@ -685,3 +720,128 @@ def test_broad_scan_isolates_unexpected_query_errors_without_losing_successes(tm
     assert len(stored['results']) == 2
     assert 'test-secret' not in str(stored)
     assert 'test-secret' not in str(result)
+
+
+def test_web_scan_stores_assessments_but_counts_only_available_fixed_price_sales(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    rows = [dict(url=f'https://dealer.example/{kind}', title=kind, snippet='Search lead')
+            for kind in ('coin', 'sold', 'article', 'unclear')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: rows)
+    statuses = {'coin':'available', 'sold':'rejected', 'article':'rejected', 'unclear':'unverified'}
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', lambda row, fetcher: sale_result(row, statuses[row['title']]))
+    result = Scanner(db).run(mode='coins', search_id=watch)
+    assert result['status'] == 'complete'
+    assert result['web_leads'] == 1
+    assert len(db.search_results(watch)['results']) == 4
+    assert [r['title'] for r in db.search_results(watch, verified_only=True)['results']] == ['coin']
+    assert '2 rejected' in result['summary']
+    assert '1 unverified' in result['summary']
+    assert 'https://dealer.example/' not in result['summary']
+
+
+def test_web_scan_rechecks_retained_sales_oldest_first_and_hides_newly_sold_coin(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    old = [dict(sale_result(dict(url=f'https://dealer.example/{i}', title=f'Coin {i}', snippet='Earlier lead')),
+                sale_checked_at=f'2026-09-{i:02d}T10:00:00+00:00') for i in (3, 1, 2)]
+    db.record_web_search(watch, old)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [])
+    checked = []
+    def verify(row, fetcher):
+        checked.append(row['url'])
+        return sale_result(row, 'rejected' if row['url'].endswith('/1') else 'available')
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    result = Scanner(db).run(mode='coins', search_id=watch)
+    assert checked == [f'https://dealer.example/{i}' for i in (1, 2, 3)]
+    assert result['web_leads'] == 2
+    assert len(db.search_results(watch, verified_only=True)['results']) == 2
+    assert next(r for r in db.search_results(watch)['results'] if r['url'].endswith('/1'))['sale_status'] == 'rejected'
+
+
+def test_retained_sales_can_be_rechecked_without_a_search_api_key(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    db.record_web_search(watch, [dict(url='https://dealer.example/coin', title='Coin', snippet='Earlier lead')])
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
+    def forbidden_api(*args, **kwargs):
+        raise AssertionError('A missing API key must not trigger a paid query')
+    monkeypatch.setattr('coinwatch.web_search.search_web', forbidden_api)
+    result = Scanner(db).run(mode='coins', search_id=watch)
+    assert result['status'] == 'complete' and result['web_queries'] == 0
+    assert result['web_leads'] == 1
+    assert db.search_results(watch, verified_only=True)['results'][0]['sale_status'] == 'available'
+
+
+def test_sale_verification_cache_is_shared_between_queries_and_watches(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watches = [wanted_search(db, name=name) for name in ('Watch A', 'Watch B')]
+    row = dict(url='https://dealer.example/coin', title='Coin', snippet='Search lead')
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [row])
+    checked = []
+    def verify(row, fetcher):
+        checked.append(row['url'])
+        return sale_result(row)
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    Scanner(db).run(mode='coins')
+    assert checked == [row['url']]
+    assert all(db.search_results(watch, verified_only=True)['results'] for watch in watches)
+
+
+@pytest.mark.parametrize('query_limit,rows_per_query', [(5, 2), (1, 1)])
+def test_sale_verification_budget_stops_later_paid_queries_and_keeps_checked_progress(tmp_path, monkeypatch, query_limit, rows_per_query):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    paid = []
+    def search(query, key, **kwargs):
+        paid.append(query)
+        return [dict(url=f'https://dealer.example/{i}', title=f'Coin {i}', snippet='Search lead') for i in range(rows_per_query)]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    def verify(row, fetcher):
+        fetcher.deadline = 0
+        return sale_result(row)
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=query_limit)
+    assert result['status'] == 'partial'
+    assert result['web_queries'] == len(paid) == 1
+    assert result['web_leads'] == 1
+    assert len(db.search_results(watch, verified_only=True)['results']) == 1
+    assert '600-second' in result['summary']
+
+
+@pytest.mark.parametrize('change', ['edit', 'delete', 'lease', 'stop'])
+def test_sale_checks_revalidate_scan_and_watch_before_more_pages_or_writes(tmp_path, monkeypatch, change):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    stop = threading.Event()
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [
+        dict(url=f'https://dealer.example/{i}', title=f'Coin {i}', snippet='Search lead') for i in (1, 2)])
+    checked = []
+    def verify(row, fetcher):
+        checked.append(row['url'])
+        if change == 'edit':
+            db.save_search(dict(db.get_search(watch), keywords='Corinth'), search_id=watch)
+        elif change == 'delete':
+            db.delete_search(watch)
+        elif change == 'lease':
+            db.finish_run(db.runs()[0]['id'], 'interrupted', 'Stopped')
+        else:
+            stop.set()
+        return sale_result(row)
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    result = Scanner(db, stop_event=stop).run(mode='coins', search_id=watch)
+    assert len(checked) == 1
+    assert result['status'] == ('interrupted' if change in ('lease', 'stop') else 'complete')
+    if change != 'delete':
+        assert db.search_results(watch)['results'] == []
