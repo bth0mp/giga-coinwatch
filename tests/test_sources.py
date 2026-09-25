@@ -117,6 +117,93 @@ def test_shanna_retains_later_valid_products_and_reports_each_untitled_card():
     assert "6a4d67b1c2a02a027d2166cf: missing title" in result.error
 
 
+def shanna_untitled_card(ident='6ab15e2bd5e67563c3b314c1', href='/greek-coins/nq8zvpfdb46hezhqi250g91obpu53o'):
+    return (f'<div class="ProductList-item" data-item-id="{ident}">'
+            f'<a class="ProductList-item-link" href="{href}"></a>'
+            '<img class="ProductList-image" alt="gk_2166.png">'
+            '<div class="product-price">$6,750.00</div></div>')
+
+
+def test_shanna_recovers_title_from_verified_detail_excerpt_and_keeps_it_concise():
+    url = 'https://www.shannaschmidt.com/greek-coins'
+    detail = url + '/nq8zvpfdb46hezhqi250g91obpu53o'
+    fetcher = FixtureFetcher({url: shanna_untitled_card() + fixture('shanna.html'),
+                              detail: fixture('shanna-detail-metapontum.html')})
+    result = scrape_source(source('shanna', url), fetcher)
+    assert result.complete and result.pages == 1
+    recovered = result.listings[0]
+    assert recovered.external_id == '6ab15e2bd5e67563c3b314c1'
+    assert recovered.title == 'Lucania, Metapontum. , Metapontum, c. 300-280 BC, AR Nomos, 7.89g (22mm, 9h).'
+    assert recovered.price == '6750.00' and recovered.availability == 'available'
+    assert recovered.url == detail
+    assert len(result.listings) == 3
+    assert fetcher.requests == [url, detail]
+
+
+def test_shanna_prefers_real_detail_title_and_bounds_long_labels():
+    url = 'https://www.shannaschmidt.com/greek-coins'
+    detail = url + '/nq8zvpfdb46hezhqi250g91obpu53o'
+    label = 'Greek silver coin ' * 30
+    html = fixture('shanna-detail-metapontum.html').replace(
+        '<h1 class="ProductItem-details-title"></h1>',
+        f'<h1 class="ProductItem-details-title">{label}</h1>')
+    result = scrape_source(source('shanna', url), FixtureFetcher({url: shanna_untitled_card(), detail: html}))
+    assert result.complete
+    assert result.listings[0].title == label[:300].rstrip()
+    assert 'Metapontum' not in result.listings[0].title
+
+
+@pytest.mark.parametrize('body,error', [
+    ('<article class="ProductItem" data-item-id="different"><h1 class="ProductItem-details-title">Athens tetradrachm</h1></article>', 'identity'),
+    ('<article class="ProductItem"><h1 class="ProductItem-details-title">Athens tetradrachm</h1></article>', 'identity'),
+    ('<meta property="og:title" content="Coin store"><article class="ProductItem" data-item-id="6ab15e2bd5e67563c3b314c1"><h1 class="ProductItem-details-title"></h1><div class="ProductItem-details-excerpt"><p>&nbsp;</p></div></article>', 'description'),
+])
+def test_shanna_failed_detail_verification_stays_partial_and_keeps_later_cards(body, error):
+    url = 'https://www.shannaschmidt.com/greek-coins'
+    detail = url + '/nq8zvpfdb46hezhqi250g91obpu53o'
+    result = scrape_source(source('shanna', url), FixtureFetcher({url: shanna_untitled_card() + fixture('shanna.html'), detail: body}))
+    assert not result.complete
+    assert len(result.listings) == 2
+    assert error in result.error
+
+
+def test_shanna_rejects_detail_redirect_to_a_different_host():
+    url = 'https://www.shannaschmidt.com/greek-coins'
+    detail = url + '/nq8zvpfdb46hezhqi250g91obpu53o'
+    class RedirectFetcher(FixtureFetcher):
+        def get(self, requested):
+            page = super().get(requested)
+            if requested == detail:
+                page.url = 'https://different.example/product'
+            return page
+    fetcher = RedirectFetcher({url: shanna_untitled_card() + fixture('shanna.html'), detail: fixture('shanna-detail-metapontum.html')})
+    result = scrape_source(source('shanna', url), fetcher)
+    assert not result.complete and len(result.listings) == 2
+    assert 'dealer site' in result.error
+
+
+def test_shanna_does_not_follow_offsite_product_link_or_fetch_without_identity():
+    url = 'https://www.shannaschmidt.com/greek-coins'
+    cards = shanna_untitled_card(href='https://different.example/product') + shanna_untitled_card(ident='')
+    fetcher = FixtureFetcher({url: cards + fixture('shanna.html')})
+    result = scrape_source(source('shanna', url), fetcher)
+    assert not result.complete and len(result.listings) == 2
+    assert fetcher.requests == [url]
+
+
+def test_shanna_attempts_at_most_five_detail_fallbacks_and_retains_later_cards():
+    url = 'https://www.shannaschmidt.com/greek-coins'
+    pages = {url: ''.join(shanna_untitled_card(ident=f'id{i}', href=f'/greek-coins/item-{i}') for i in range(7)) + fixture('shanna.html')}
+    for i in range(7):
+        pages[f'{url}/item-{i}'] = fixture('shanna-detail-metapontum.html').replace('6ab15e2bd5e67563c3b314c1', f'id{i}')
+    fetcher = FixtureFetcher(pages)
+    result = scrape_source(source('shanna', url), fetcher)
+    assert not result.complete
+    assert len(result.listings) == 7
+    assert fetcher.requests == [url] + [f'{url}/item-{i}' for i in range(5)]
+    assert 'limit' in result.error
+
+
 def test_palmyra_roman_category_uses_usd_and_purchase_control():
     url = "https://palmyraheritagegallery.com/product-category/ancient-coins/roman/"
     result = scrape_source(source("palmyra", url), FixtureFetcher({url: fixture("palmyra.html")}))

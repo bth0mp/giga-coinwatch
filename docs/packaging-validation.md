@@ -23,6 +23,8 @@ Date: 2026-09-25
 
 The Search-tab update passed 227 automated tests, including selection of a saved search, forwarding its chosen query budget, and rejecting invalid budgets, missing searches and invalid form tokens. The native app was restarted and the live browser verified the new navigation, saved-search selector and changing credit estimate. No scan was submitted during UI validation and no Tavily credits were used.
 
+The Shanna title-recovery follow-up passed 235 automated tests. A targeted live dealer check, run under the normal instance lock and database scan lease after a backup, read all 159 products (133 available, 26 sold). The two untitled cards were recovered from matching product-page descriptions, and the completed result established the source baseline. The native app was restarted; its 98 existing wider-web leads were preserved. This check made no Tavily requests. Historical partial runs remain unchanged.
+
 ## Integration checks to run
 
 1. At a convenient time, sign out and back in to verify the configured logon trigger. This was not done automatically because it would interrupt the user's desktop session.

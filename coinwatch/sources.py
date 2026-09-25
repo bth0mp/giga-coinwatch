@@ -21,6 +21,8 @@ _PRICE = re.compile(r"(?:£|€|\$)\s*([\d,.]+)")
 
 
 def _text(node) -> str:
+    if isinstance(node, str):
+        return node
     return node.get_text(" ", strip=True) if node else ""
 
 
@@ -165,8 +167,31 @@ def _historynumis(card, base):
                     currency="EUR", availability=status, image=card.select_one("img"))
 
 
-def _shanna(card, base):
-    title = card.select_one(".ProductList-title")
+def _shanna_detail_title(card, base, fetcher):
+    ident = card.get("data-item-id")
+    if not ident:
+        raise ValueError("missing product identity")
+    link = card.select_one("a.ProductList-item-link")
+    url = _absolute(base, link.get("href") if link else None)
+    detail = fetcher.get(url)
+    if urlsplit(detail.url).hostname != urlsplit(base).hostname:
+        raise ValueError("detail page left dealer site")
+    soup = BeautifulSoup(detail.text, "html.parser")
+    article = soup.select_one("article.ProductItem")
+    if not article or article.get("data-item-id") != ident:
+        raise ValueError("detail product identity does not match catalog card")
+    title = _text(article.select_one(".ProductItem-details-title"))
+    if not title:
+        paragraphs = [_text(p) for p in article.select(".ProductItem-details-excerpt p") if _text(p)]
+        title = " ".join(paragraphs[:2])
+    title = " ".join(title.split())[:300].rstrip()
+    if not title:
+        raise ValueError("missing detail title and description")
+    return title
+
+
+def _shanna(card, base, title=None):
+    title = title or card.select_one(".ProductList-title")
     if not _text(title):
         raise ValueError(f"product {card.get('data-item-id') or '(no ID)'}: missing title")
     if _reject(_text(title)):
@@ -275,6 +300,7 @@ def scrape_source(source: dict, fetcher) -> ScrapeResult:
     last_page = 1
     seen_ids: set[str] = set()
     card_errors: list[str] = []
+    detail_fallbacks = 0
     for number in range(1, MAX_PAGES + 1):
         url = _page_url(base, number, adapter)
         try:
@@ -292,7 +318,17 @@ def scrape_source(source: dict, fetcher) -> ScrapeResult:
             return ScrapeResult(listings, pages, False, f"no {adapter} product cards at {url}")
         for card in cards:
             try:
-                item = parser(card, page.url)
+                if adapter == "shanna" and not _text(card.select_one(".ProductList-title")):
+                    try:
+                        if detail_fallbacks >= 5:
+                            raise ValueError("detail fallback limit of five per sweep reached")
+                        detail_fallbacks += 1
+                        title = _shanna_detail_title(card, page.url, fetcher)
+                    except Exception as exc:
+                        raise ValueError(f"product {card.get('data-item-id') or '(no ID)'}: missing title; detail fallback: {exc}") from exc
+                    item = _shanna(card, page.url, title=title)
+                else:
+                    item = parser(card, page.url)
             except ValueError as exc:
                 # One broken card must not hide valid stock later in the catalog.
                 # Retain the error so this sweep cannot replace a complete baseline.
