@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Delete saved search{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Delete saved search?</h1></div></div>
+<section class="panel delete-search" aria-labelledby="delete-search-heading">
+  <h2 id="delete-search-heading">{{ search.name }}</h2>
+  <p>This deletes the saved search and its web results, and stops its daily checks. It cannot be undone.</p>
+  <p>Your catalog coins and saved coins stay in your collection.</p>
+  <form class="wanted-actions" action="/wanted/{{ search.id }}/delete" method="post">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <a class="button button-secondary" href="/search">Cancel</a>
+    <button class="button button-danger" type="submit">Delete search</button>
+  </form>
+</section>
+{% endblock %}

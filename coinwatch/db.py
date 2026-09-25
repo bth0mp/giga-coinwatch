@@ -113,6 +113,9 @@ class Database:
                     c.execute('UPDATE sources SET enabled=0 WHERE id=?', (s['id'],))
             for k, v in dict(timezone='Europe/London', scan_time='09:00', csrf_token=secrets.token_urlsafe(32), last_scheduled_date='').items():
                 c.execute('INSERT OR IGNORE INTO settings VALUES(?,?)', (k, v))
+            c.execute("""INSERT INTO settings(key,value)
+                         VALUES('last_search_id',(SELECT COALESCE(MAX(id),0) FROM wanted_searches))
+                         ON CONFLICT(key) DO UPDATE SET value=MAX(CAST(settings.value AS INTEGER),CAST(excluded.value AS INTEGER))""")
 
     def list_sources(self):
         with self.connect() as c:
@@ -221,10 +224,15 @@ class Database:
         clean = validate_search(values)
         with self.connect() as c:
             if search_id is None:
-                columns = ','.join(clean) + ',created_at'
-                marks = ','.join('?' for _ in range(len(clean) + 1))
-                return c.execute(f'INSERT INTO wanted_searches({columns}) VALUES({marks})',
-                                 (*clean.values(), utcnow())).lastrowid
+                # Deleted search URLs and in-flight results must never target a later search.
+                c.execute('BEGIN IMMEDIATE')
+                search_id = int(c.execute("SELECT value FROM settings WHERE key='last_search_id'").fetchone()[0]) + 1
+                columns = 'id,' + ','.join(clean) + ',created_at'
+                marks = ','.join('?' for _ in range(len(clean) + 2))
+                c.execute(f'INSERT INTO wanted_searches({columns}) VALUES({marks})',
+                          (search_id, *clean.values(), utcnow()))
+                c.execute("UPDATE settings SET value=? WHERE key='last_search_id'", (str(search_id),))
+                return search_id
             old = c.execute('SELECT * FROM wanted_searches WHERE id=?', (search_id,)).fetchone()
             if old is None:
                 raise ValueError('Wanted search not found')

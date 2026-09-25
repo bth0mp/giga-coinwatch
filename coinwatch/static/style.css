@@ -36,6 +36,8 @@ a { color: inherit; }
 .button-primary:disabled { opacity: .7; cursor: default; }
 .button-secondary { background: white; color: var(--slate-deep); border-color: #bac6cd; }
 .button-secondary:hover { background: #edf1f2; }
+.button-danger { background: var(--error); color: white; }
+.button-danger:hover { filter: brightness(.9); }
 .button:disabled { opacity: .65; cursor: default; }
 a.button { display: inline-block; text-decoration: none; }
 .scan-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 15px; padding-block: 15px; border-bottom: 1px solid #dce3e6; }
@@ -79,9 +81,8 @@ a.button { display: inline-block; text-decoration: none; }
 .search-edit .wanted-form { max-width: 780px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .search-edit .wanted-form .wide-field { grid-column: 1 / -1; }
 .search-edit .wanted-form > .button { justify-self: start; }
-.delete-search { margin-top: 22px; color: var(--muted); font-size: 13px; }
-.delete-search summary { cursor: pointer; }
-.delete-search p { margin: 12px 0; }
+.delete-search { max-width: 720px; }
+.delete-search h2 { overflow-wrap: anywhere; }
 .section-heading-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
 .section-heading-row h2 { margin: 0; font: normal 26px Georgia, serif; }
 .section-heading-row > span { font-size: 13px; }

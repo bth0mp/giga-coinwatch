@@ -26,6 +26,7 @@
         <div class="wanted-actions">
           <a class="button button-secondary" href="/wanted/{{ saved.id }}">View matches</a>
           <form action="/wanted/{{ saved.id }}/enabled" method="post"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ 'false' if saved.enabled else 'true' }}"><button class="button button-secondary" type="submit">{{ 'Pause' if saved.enabled else 'Enable' }}</button></form>
+          <a class="button button-secondary" href="/wanted/{{ saved.id }}/delete" aria-label="Delete saved search {{ saved.name }}">Delete</a>
         </div>
       </article>
     {% endfor %}</div>{% else %}<div class="empty-state"><h2>What are you looking for?</h2><p>Save a search to check existing stock straight away and keep checking as new coins arrive.</p></div>{% endif %}

@@ -176,6 +176,53 @@ def test_inflight_results_cannot_restore_deleted_or_changed_search(db, action):
         assert c.execute('SELECT COUNT(*) FROM search_web_results').fetchone()[0] == 0
 
 
+def test_legacy_search_id_is_not_reused_after_deletion_and_reinitialization(db):
+    original = db.save_search({'keywords': 'owl'})
+    with db.connect() as c:
+        c.execute('UPDATE wanted_searches SET id=41 WHERE id=?', (original,))
+        c.execute("DELETE FROM settings WHERE key='last_search_id'")
+    db.initialize([])
+    query = db.get_search(41)['web_query']
+    db.delete_search(41)
+    db.initialize([])
+    db.initialize([])
+    replacement = db.save_search({'keywords': 'owl'})
+    assert replacement == 42
+    assert db.record_web_search(41, [dict(url='https://dealer.example/stale', title='Stale coin')], expected_query=query) is False
+    with pytest.raises(ValueError, match='not found'):
+        db.delete_search(41)
+    assert db.get_search(replacement)['keywords'] == 'owl'
+    assert db.search_results(replacement)['results'] == []
+
+
+def test_concurrent_search_creates_allocate_distinct_ids_and_preserve_high_water_mark(db):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        ids = list(pool.map(lambda i: db.save_search({'keywords': 'owl', 'name': f'Search {i}'}), range(18)))
+    assert len(set(ids)) == 18
+    assert sorted(ids) == list(range(1, 19))
+    for search_id in ids:
+        db.delete_search(search_id)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(lambda _: db.initialize([]), range(6)))
+    assert db.save_search({'keywords': 'owl'}) == 19
+
+
+def test_failed_search_insert_does_not_consume_an_id(db):
+    import sqlite3
+
+    first = db.save_search({'keywords': 'owl'})
+    with db.connect() as c:
+        c.execute("CREATE TRIGGER reject_search BEFORE INSERT ON wanted_searches BEGIN SELECT RAISE(ABORT, 'Test insert failure'); END")
+    with pytest.raises(sqlite3.IntegrityError, match='Test insert failure'):
+        db.save_search({'keywords': 'owl'})
+    with db.connect() as c:
+        c.execute('DROP TRIGGER reject_search')
+    db.delete_search(first)
+    assert db.save_search({'keywords': 'owl'}) == first + 1
+
+
 def test_long_local_search_requires_shortening_before_web_opt_in(db):
     values = dict(keywords='a' * 490, coin_type='b' * 200, mint='c' * 200, ruler='d' * 200)
     with pytest.raises(ValueError, match='Shorten'):

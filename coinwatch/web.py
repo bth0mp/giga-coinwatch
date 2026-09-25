@@ -231,12 +231,18 @@ def create_app(db, runtime) -> FastAPI:
         db.set_search_enabled(search_id, enabled == "true")
         return RedirectResponse(_return_to(return_to, "/wanted"), status_code=303)
 
+    @app.get("/wanted/{search_id}/delete")
+    def wanted_delete_confirmation(request: Request, search_id: int):
+        return templates.TemplateResponse(request, "wanted_delete.html", context(
+            request, page="wanted", search=find_search(search_id),
+        ))
+
     @app.post("/wanted/{search_id}/delete")
     def wanted_delete(search_id: int, csrf_token: str = Form("")):
         require_csrf(csrf_token)
         find_search(search_id)
         db.delete_search(search_id)
-        return RedirectResponse("/wanted", status_code=303)
+        return RedirectResponse("/search", status_code=303)
 
     @app.post("/wanted/{search_id}/scan")
     def wanted_scan(search_id: int, csrf_token: str = Form(""), web_queries: str = Form("1")):

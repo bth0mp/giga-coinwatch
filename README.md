@@ -24,6 +24,8 @@ Use **New saved search** on the same page to enter a coin type, mint, ruler, key
 
 Matches include available coins from the initial inventory and subsequent scans, with a link to the seller and the last observed price. These are seller-text matches, not verified coin attributions. Pausing a wanted search stops its automatic web queries; the saved local match view stays usable. Editing the criteria clears old web leads for that search. Deleting a search leaves catalog and saved coins intact.
 
+To remove a saved search, choose **Delete** beside it on the **Search** page, or **Delete search** on its results page. The confirmation names the search being removed. Confirming deletes its criteria and web results, stops its daily checks, and returns to Search; **Cancel** keeps it.
+
 - **Scan coins** refreshes enabled, supported dealer stock and checks enabled wanted searches on the web when configured.
 - **Find dealers** searches Tavily when configured and checks the supported public directory for additional dealer candidates; it does not rescan coin inventory. Review leads under **Discoveries**. A newly accepted dealer still needs a validated parser before monitoring can be enabled.
 - **Scan both** does both jobs. The daily schedule uses this mode.

@@ -192,6 +192,40 @@ def test_wanted_search_mutations_require_csrf_and_missing_search_returns_404(tmp
     assert client.post(f"/wanted/{search_id}/scan", data=token(db)).status_code == 404
 
 
+def test_delete_search_is_visible_and_confirmation_only_removes_selected_search(tmp_path):
+    from bs4 import BeautifulSoup
+    client, db, _ = setup_catalog(tmp_path)
+    selected = db.save_search({"name": "Athens & <owl>", "mint": "Athens", "include_web": True})
+    other = db.save_search({"name": "Rome", "mint": "Rome"})
+    db.record_web_search(selected, [{"url": "https://example.com/athens", "title": "Athens coin"}])
+    listing_id = db.list_listings(view="all")[0][0]["id"]
+    client.post(f"/listings/{listing_id}/save", data=token(db))
+    catalog_before = db.list_listings(view="all")
+    saved_before = db.list_listings(view="saved")
+    delete_url = f"/wanted/{selected}/delete"
+    for path in ("/search", f"/wanted/{selected}"):
+        soup = BeautifulSoup(client.get(path).text, "html.parser")
+        link = soup.select_one(f'a[href="{delete_url}"]')
+        assert link is not None and link.find_parent("details") is None
+    confirmation = client.get(delete_url)
+    assert confirmation.status_code == 200
+    assert "Athens &amp; &lt;owl&gt;" in confirmation.text
+    soup = BeautifulSoup(confirmation.text, "html.parser")
+    cancel = soup.find("a", string="Cancel")
+    assert client.get(cancel["href"]).status_code == 200
+    assert len(db.search_results(selected)["results"]) == 1
+    assert len(db.list_searches()) == 2
+    assert client.post(delete_url).status_code == 403
+    response = client.post(delete_url, data=token(db))
+    assert response.status_code == 303 and response.headers["location"] == "/search"
+    assert [row["id"] for row in db.list_searches()] == [other]
+    assert client.get(delete_url).status_code == 404
+    assert db.list_listings(view="all") == catalog_before
+    assert db.list_listings(view="saved") == saved_before
+    with db.connect() as c:
+        assert c.execute("SELECT COUNT(*) FROM search_web_results WHERE search_id=?", (selected,)).fetchone()[0] == 0
+
+
 def test_web_search_key_is_saved_locally_never_rendered_and_clearable(tmp_path, monkeypatch):
     monkeypatch.delenv("TAVILY_API_KEY", raising=False)
     client, db, _ = setup_catalog(tmp_path)
