@@ -5,6 +5,19 @@
   const page = document.body.dataset.page;
   let wasRunning = document.body.dataset.scanRunning === 'true';
 
+  const queryCount = document.querySelector('[data-web-query-count]');
+  const queryEstimate = document.querySelector('[data-web-query-estimate]');
+  if (queryCount && queryEstimate) {
+    const updateEstimate = () => {
+      const count = Number(queryCount.value);
+      queryEstimate.textContent = Number.isInteger(count) && count >= 1 && count <= 50
+        ? `Estimate: up to ${count} basic Tavily ${count === 1 ? 'credit' : 'credits'} and ${count * 20} results before duplicates.`
+        : 'Choose a whole number from 1 to 50.';
+    };
+    queryCount.addEventListener('input', updateEstimate);
+    updateEstimate();
+  }
+
   function refreshedUrl() {
     const url = new URL(window.location.href);
     url.searchParams.delete('scan');
@@ -55,7 +68,10 @@
       buttons.forEach((button) => { button.disabled = running; });
       light.classList.toggle('busy', running);
       const mode = { coins: 'Scanning coins', dealers: 'Finding dealers', both: 'Scanning coins and dealers' }[status.mode] || 'Scanning';
-      label.textContent = running ? `${mode}: ${status.source || status.phase || 'starting'}` : 'Ready';
+      const progress = (status.phase || '').startsWith('Searching the wider web')
+        ? [status.phase, status.source].filter(Boolean).join(': ')
+        : `${mode}: ${status.source || status.phase || 'starting'}`;
+      label.textContent = running ? progress : 'Ready';
 
       if (wasRunning && !running) {
         const active = document.activeElement;

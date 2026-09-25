@@ -62,6 +62,7 @@ def main():
     scan.add_argument('--no-discovery', action='store_true', help='Legacy alias for --mode coins')
     scan.add_argument('--source', action='append')
     scan.add_argument('--search-id', type=int, help='Run a saved wanted search by its positive ID')
+    scan.add_argument('--web-queries', type=int, default=1, help='Web queries for one wanted search, from 1 to 50 (default: 1)')
     commands.add_parser('status')
     commands.add_parser('backup').add_argument('destination', type=Path)
     commands.add_parser('restore').add_argument('source', type=Path)
@@ -73,6 +74,11 @@ def main():
             parser.error('--search-id must be a positive integer')
         if args.mode == 'dealers':
             parser.error('--search-id requires --mode coins or --mode both')
+    if args.command == 'scan':
+        if not 1 <= args.web_queries <= 50:
+            parser.error('--web-queries must be between 1 and 50')
+        if args.web_queries > 1 and args.search_id is None:
+            parser.error('--web-queries above 1 requires --search-id')
     directory = data_directory(args.data_dir)
     directory.mkdir(parents=True, exist_ok=True)
     configure_logging(directory)
@@ -109,7 +115,7 @@ def main():
         elif args.command == 'scan':
             from .scanner import Scanner
             with InstanceLock(directory):
-                result = Scanner(db).run(source_ids=args.source, include_discovery=not args.no_discovery, mode=args.mode, search_id=args.search_id)
+                result = Scanner(db).run(source_ids=args.source, include_discovery=not args.no_discovery, mode=args.mode, search_id=args.search_id, web_queries=args.web_queries)
             print(json.dumps(result, indent=2))
             return 1 if result['status'] in ('failed','busy') else 0
         else:

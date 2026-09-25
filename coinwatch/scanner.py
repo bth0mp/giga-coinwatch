@@ -25,6 +25,13 @@ def get_scan_search(db, mode, search_id):
     return db.get_search(search_id)
 
 
+def validate_web_queries(web_queries, kind, selected_search):
+    if type(web_queries) is not int or not 1 <= web_queries <= 50:
+        raise ValueError('Choose between 1 and 50 web queries.')
+    if web_queries > 1 and (kind != 'manual' or not selected_search or not selected_search['include_web']):
+        raise ValueError('Multiple web queries require a manual scan of one wanted search with wider-web search enabled.')
+
+
 class Scanner:
     def __init__(self, db, scrape=None, progress=None, stop_event=None):
         self.db = db
@@ -33,7 +40,8 @@ class Scanner:
         self.stop_event = stop_event or threading.Event()
         self.run_id = None
 
-    def _scan_web(self, searches, errors, notes):
+    def _scan_web(self, searches, errors, notes, query_limit=1):
+        from .searches import web_query_variants
         from .web_search import WebSearchError, load_api_key, search_web
         searches = [search for search in searches if search['include_web']]
         if not searches:
@@ -52,29 +60,61 @@ class Scanner:
         for search in searches[:5]:
             if self.stop_event.is_set():
                 break
-            self.progress(phase='Searching the wider web', source=search['name'])
-            queries += 1
-            results, error = None, None
-            try:
-                results = search_web(search['web_query'], api_key)
-            except WebSearchError as e:
-                error = str(e)
-            except Exception as e:
-                # Transport exceptions can embed authorization headers or keys.
-                log.warning('Web search failed for wanted search %s (%s)', search['id'], type(e).__name__)
-                error = 'Wider web search failed. Please try again later.'
-            if self.stop_event.is_set():
-                break
-            if not self.db.record_web_search(search['id'], results, error, expected_query=search['web_query'], run_id=self.run_id):
-                if not self.db.renew_lease(self.run_id):
+            variants = web_query_variants(search, query_limit) if query_limit > 1 else [search['web_query']]
+            gathered, search_errors, successful, saved_count = {}, [], False, 0
+            for index, query in enumerate(variants):
+                if self.stop_event.is_set() or not self.db.renew_lease(self.run_id):
                     self.stop_event.set()
                     break
-                notes.append(f"Wanted search \"{search['name']}\" changed or was removed; its outdated web response was discarded.")
-                continue
-            if error:
-                errors.append(f"{search['name']}: {error}")
-            else:
-                leads += len(results)
+                try:
+                    current = self.db.get_search(search['id'])
+                except ValueError:
+                    current = None
+                if not current or not current['include_web'] or current['web_query'] != search['web_query']:
+                    notes.append(f"Wanted search \"{search['name']}\" changed or was removed; remaining web queries were skipped.")
+                    break
+                self.progress(phase=f'Searching the wider web ({index + 1}/{len(variants)})', source=search['name'])
+                options = {'max_results': 20}
+                if index >= 5:
+                    hosts = (urlsplit(url).hostname for url in gathered)
+                    options['exclude_domains'] = list(dict.fromkeys(
+                        host.lower().removeprefix('www.') for host in hosts
+                        if host and '.' in host and not host.rsplit('.', 1)[-1].isdigit()))[:150]
+                queries += 1
+                error, halt_broad_scan = None, False
+                try:
+                    results = search_web(query, api_key, **options)
+                except WebSearchError as e:
+                    error = str(e)
+                    halt_broad_scan = query_limit > 1
+                except Exception as e:
+                    # Transport exceptions can embed authorization headers or keys.
+                    log.warning('Web search failed for wanted search %s (%s)', search['id'], type(e).__name__)
+                    error = 'Wider web search failed. Please try again later.'
+                else:
+                    successful = True
+                    for result in results:
+                        gathered.setdefault(result['url'], result)
+                if self.stop_event.is_set():
+                    break
+                if error:
+                    search_errors.append(error)
+                recorded = self.db.record_web_search(
+                    search['id'], list(gathered.values()) if successful else None,
+                    '; '.join(search_errors) or None, expected_query=search['web_query'], run_id=self.run_id, merge=True)
+                if not recorded:
+                    if not self.db.renew_lease(self.run_id):
+                        self.stop_event.set()
+                    else:
+                        notes.append(f"Wanted search \"{search['name']}\" changed or was removed; its outdated web response was discarded.")
+                    break
+                leads += len(gathered) - saved_count
+                saved_count = len(gathered)
+                if error:
+                    errors.append(f"{search['name']}: {error}")
+                if halt_broad_scan:
+                    notes.append('Remaining broad-search queries were skipped after the provider error.')
+                    break
         return queries, leads
 
     def _scan_dealers(self, fetcher, errors, notes):
@@ -129,9 +169,11 @@ class Scanner:
                     errors.append(f'Candidate skipped: {exc}')
         return count
 
-    def run(self, kind='manual', source_ids=None, include_discovery=True, mode='both', search_id=None):
+    def run(self, kind='manual', source_ids=None, include_discovery=True, mode='both', search_id=None, web_queries=1):
         mode = normalize_scan_mode(mode, include_discovery)
         selected_search = get_scan_search(self.db, mode, search_id)
+        validate_web_queries(web_queries, kind, selected_search)
+        query_limit = web_queries
         run_kind = f'manual-{mode}' if kind == 'manual' else kind
         run_id = self.db.claim_run(run_kind)
         self.run_id = run_id
@@ -175,7 +217,7 @@ class Scanner:
                     errors.append(f"{source['name']}: {e}")
             if mode in ('coins', 'both') and not self.stop_event.is_set():
                 searches = [selected_search] if selected_search else self.db.list_searches(enabled_only=True)
-                web_queries, web_leads = self._scan_web(searches, errors, notes)
+                web_queries, web_leads = self._scan_web(searches, errors, notes, query_limit=query_limit)
                 if selected_search:
                     try:
                         current_search = self.db.get_search(selected_search['id'])

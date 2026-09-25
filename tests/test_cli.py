@@ -82,3 +82,26 @@ def test_cli_accepts_positive_search_id_and_rejects_missing_watch_without_scan(t
     assert result.returncode == 1
     db = Database(tmp_path/'catalog.db')
     assert db.runs() == []
+
+
+@pytest.mark.parametrize('flags', [['--web-queries','0'], ['--web-queries','51'], ['--web-queries','2']])
+def test_cli_rejects_invalid_or_unscoped_web_query_budget(tmp_path, flags):
+    result = command('--data-dir', tmp_path, 'scan', *flags)
+    assert result.returncode == 2
+    assert '--web-queries' in result.stderr
+    assert not (tmp_path/'catalog.db').exists()
+
+
+def test_cli_runs_requested_number_of_selected_watch_queries(tmp_path, monkeypatch, capsys):
+    from coinwatch.__main__ import main
+    from coinwatch.models import ScrapeResult
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = db.save_search(dict(name='Athens', keywords='Athens', include_web=True))
+    monkeypatch.setattr('coinwatch.sources.scrape_source', lambda *args: ScrapeResult([], 1))
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [])
+    monkeypatch.setattr(sys, 'argv', ['coinwatch','--data-dir',str(tmp_path),'scan','--mode','coins','--search-id',str(watch),'--web-queries','3'])
+    assert main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['web_queries'] == 3

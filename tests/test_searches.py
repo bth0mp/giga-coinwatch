@@ -148,3 +148,65 @@ def test_late_web_result_cannot_write_after_scan_lease_lost(db, lost_lease):
     assert db.renew_lease(run) is False
     assert db.search_results(id)['status'] == 'idle'
     assert db.search_results(id)['results'] == []
+
+
+def test_broad_queries_keep_user_constraints_and_have_international_variants(db):
+    from coinwatch.searches import web_query_variants
+    id = db.save_search({'keywords': '"silver owl"', 'mint': 'Athens', 'exclude_terms': 'plated "modern copy"'})
+    search = db.get_search(id)
+    queries = web_query_variants(search, 50)
+    assert len(queries) == len(set(queries)) == 50
+    assert web_query_variants(search, 1) == [search['web_query']]
+    assert all('"silver owl"' in q and 'Athens' in q and '-plated' in q and '-"modern copy"' in q for q in queries)
+    assert any('Münzen' in q for q in queries) and any('monnaies' in q for q in queries)
+    assert all(len(q) <= 1000 for q in queries)
+
+
+@pytest.mark.parametrize('count', [0, 51, -1, True, 2.5, '10'])
+def test_invalid_broad_query_budget_rejected(db, count):
+    from coinwatch.searches import web_query_variants
+    id = db.save_search({'keywords': 'Hadrian'})
+    with pytest.raises(ValueError):
+        web_query_variants(db.get_search(id), count)
+
+
+def test_long_queries_never_truncate_collector_terms_to_add_variations(db):
+    from coinwatch.searches import web_query_variants
+    id = db.save_search({'keywords': 'a' * 480, 'mint': 'b' * 190, 'ruler': 'c' * 190, 'category': 'd' * 90})
+    queries = web_query_variants(db.get_search(id), 50)
+    assert queries
+    assert all(len(q) <= 1000 and 'a' * 480 in q and 'd' * 90 in q for q in queries)
+
+
+def test_broad_results_retain_more_than_twenty_and_daily_scan_does_not_erase_them(db):
+    id = db.save_search({'keywords': 'owl'})
+    leads = [dict(url=f'https://shop.example/{i}', title=f'Owl {i}') for i in range(80)]
+    db.record_web_search(id, leads, merge=True)
+    assert len(db.search_results(id)['results']) == 80
+    db.record_web_search(id, [dict(url='https://shop.example/1#top', title='Updated owl')], merge=True)
+    stored = db.search_results(id)['results']
+    assert len(stored) == 80 and stored[0]['title'] == 'Updated owl'
+    db.record_web_search(id, [], merge=True)
+    assert len(db.search_results(id)['results']) == 80
+
+
+def test_partial_query_batch_keeps_new_and_previous_leads(db):
+    id = db.save_search({'keywords': 'owl'})
+    db.record_web_search(id, [dict(url='https://old.example/coin', title='Earlier owl')])
+    old = db.search_results(id)['results'][0]
+    db.record_web_search(id, [dict(url='https://new.example/coin', title='New owl')], 'Rate limit reached', merge=True)
+    result = db.search_results(id)
+    assert result['status'] == 'partial' and result['error'] == 'Rate limit reached'
+    assert [r['title'] for r in result['results']] == ['New owl', 'Earlier owl']
+    assert result['results'][1]['last_seen'] == old['last_seen']
+    db.record_web_search(id, None, 'Unavailable', merge=True)
+    assert db.search_results(id)['results'] == result['results']
+
+
+def test_accumulated_leads_cap_retains_latest_batch(db):
+    id = db.save_search({'keywords': 'owl'})
+    db.record_web_search(id, [dict(url=f'https://old.example/{i}', title='Old') for i in range(1000)], merge=True)
+    db.record_web_search(id, [dict(url=f'https://new.example/{i}', title='New') for i in range(20)], merge=True)
+    result = db.search_results(id)['results']
+    assert len(result) == 1000
+    assert all(r['title'] == 'New' for r in result[:20])

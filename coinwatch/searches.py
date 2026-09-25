@@ -95,3 +95,35 @@ def with_web_query(search):
     search['web_query'] = query
     search['web_url'] = 'https://www.google.com/search?' + urlencode({'q': query})
     return search
+
+
+def web_query_variants(search, count=1):
+    """Vary shop wording internationally without dropping collector constraints."""
+    if type(count) is not int or not 1 <= count <= 50:
+        raise ValueError('Choose a whole number from 1 to 50 web queries.')
+    core = ' '.join(search[k] for k in CRITERIA[:5] if search[k])
+    excluded = ''.join(' -' + ('"' + term + '"' if ' ' in term else term)
+                       for term in terms(search['exclude_terms']))
+    phrases = (
+        'ancient coins buy fixed price',
+        'antike Münzen kaufen',
+        'monnaies antiques vente',
+        'monedas antiguas comprar',
+        'monete antiche vendita',
+        'moedas antigas comprar',
+        'ancient coin in stock',
+        'ancient coin dealer inventory',
+        'ancient numismatic shop',
+        'ancient coins for sale',
+    )
+    queries = []
+    for angle in ('', ' online', ' catalogue', ' store', ' numismatics'):
+        for phrase in phrases:
+            query = f'{core} {phrase}{angle}{excluded}'
+            # Saved searches can already be near the provider's length limit.
+            # Skip an overlong variation instead of silently losing a criterion.
+            if len(query) <= 1000 and query not in queries:
+                queries.append(query)
+            if len(queries) == count:
+                return queries
+    return queries

@@ -26,7 +26,7 @@
   <main class="shell" id="main">
     <div class="utility-row">
       <div class="system-status" role="status" aria-live="polite"><span class="status-light {{ 'busy' if runtime.running else '' }}" data-status-light aria-hidden="true"></span>
-        <span data-scan-status>{% if runtime.running %}{{ {'coins': 'Scanning coins', 'dealers': 'Finding dealers', 'both': 'Scanning coins and dealers'}.get(runtime.mode, 'Scanning') }}{% if runtime.source %}: {{ runtime.source }}{% endif %}{% else %}Ready{% endif %}</span>
+        <span data-scan-status>{% if runtime.running %}{% set phase = runtime.phase|default('', true) %}{% if phase.startswith('Searching the wider web') %}{{ phase }}{% else %}{{ {'coins': 'Scanning coins', 'dealers': 'Finding dealers', 'both': 'Scanning coins and dealers'}.get(runtime.mode, 'Scanning') }}{% endif %}{% if runtime.source %}: {{ runtime.source }}{% endif %}{% else %}Ready{% endif %}</span>
       </div>
       <p>Daily scan: {{ settings.scan_time }} {{ settings.timezone }}</p>
     </div>

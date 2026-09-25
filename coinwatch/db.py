@@ -248,12 +248,12 @@ class Database:
                              (per_page, (max(1, page) - 1) * per_page)).fetchall()
         return [dict(row) for row in rows], total
 
-    def record_web_search(self, search_id, results=None, error=None, *, expected_query=None, run_id=None):
+    def record_web_search(self, search_id, results=None, error=None, *, expected_query=None, run_id=None, merge=False):
         now = utcnow()
         # Validate the complete result set before changing the last successful snapshot.
         clean = {}
-        if error is None:
-            for result in (results or [])[:20]:
+        if results is not None or error is None:
+            for result in (results or [])[:1000]:
                 url = public_url_shape(result['url'])
                 parts = urlsplit(url)
                 params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
@@ -272,14 +272,20 @@ class Database:
                 return False
             if search is None:
                 raise ValueError('Wanted search not found')
-            if error is None:
-                previous = dict(c.execute('SELECT url,first_seen FROM search_web_results WHERE search_id=?', (search_id,)).fetchall())
+            if results is not None or error is None:
+                previous = {row['url']: dict(row) for row in c.execute('SELECT * FROM search_web_results WHERE search_id=? ORDER BY position', (search_id,))}
+                combined = {url: (title, snippet, previous.get(url, {}).get('first_seen', now), now)
+                            for url, (title, snippet) in clean.items()}
+                if merge or error is not None:
+                    for url, row in previous.items():
+                        combined.setdefault(url, (row['title'], row['snippet'], row['first_seen'], row['last_seen']))
                 c.execute('DELETE FROM search_web_results WHERE search_id=?', (search_id,))
-                for position, (url, (title, snippet)) in enumerate(clean.items()):
+                for position, (url, values) in enumerate(list(combined.items())[:1000]):
                     c.execute('INSERT INTO search_web_results VALUES(?,?,?,?,?,?,?)',
-                              (search_id, url, title, snippet, previous.get(url, now), now, position))
+                              (search_id, url, *values, position))
+            status = 'complete' if error is None else ('partial' if results is not None else 'error')
             c.execute('UPDATE wanted_searches SET web_status=?,web_error=?,web_checked_at=? WHERE id=?',
-                      ('error' if error is not None else 'complete', str(error or '')[:500], now, search_id))
+                      (status, str(error or '')[:500], now, search_id))
         return True
 
     def search_results(self, search_id):

@@ -280,7 +280,10 @@ def test_wanted_scan_queries_only_selected_watch_and_preserves_catalog(tmp_path,
     selected = wanted_search(db)
     other = wanted_search(db, name='Corinth')
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
-    monkeypatch.setattr('coinwatch.web_search.search_web', lambda query, key: [dict(url='https://example.com/owl', title=query, snippet='Silver owl')])
+    def search(query, key, *, max_results):
+        assert max_results == 20
+        return [dict(url='https://example.com/owl', title=query, snippet='Silver owl')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
     def scrape(source, fetcher):
         return ScrapeResult([
             Listing('a', 'https://shop.example/a', 'Athens tetradrachm', '50', 'GBP'),
@@ -325,7 +328,7 @@ def test_web_queries_rotate_oldest_first_with_five_attempt_limit_and_failure_iso
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
     monkeypatch.setattr('coinwatch.discovery.discover', lambda *args, **kwargs: [])
     attempts = 0
-    def search(query, key):
+    def search(query, key, **kwargs):
         nonlocal attempts
         attempts += 1
         if attempts == 1:
@@ -341,7 +344,7 @@ def test_web_queries_rotate_oldest_first_with_five_attempt_limit_and_failure_iso
     assert db.search_results(disabled)['status'] == 'idle'
     unqueried = next(watch for watch, state in zip(watches, states) if state['status'] == 'idle')
     next_queries = []
-    def search_again(query, key):
+    def search_again(query, key, **kwargs):
         next_queries.append(query)
         return []
     monkeypatch.setattr('coinwatch.web_search.search_web', search_again)
@@ -386,7 +389,7 @@ def test_unexpected_provider_error_does_not_persist_secrets(tmp_path, monkeypatc
     db.initialize([])
     watch = wanted_search(db)
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
-    def broken_search(query, key):
+    def broken_search(query, key, **kwargs):
         raise RuntimeError('transport failed with key=' + key)
     monkeypatch.setattr('coinwatch.web_search.search_web', broken_search)
     result = Scanner(db).run(mode='coins')
@@ -404,7 +407,7 @@ def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(
     watch = wanted_search(db)
     entered, release = threading.Event(), threading.Event()
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
-    def search(query, key):
+    def search(query, key, **kwargs):
         entered.set()
         if not release.wait(5):
             raise TimeoutError('Test did not release search')
@@ -412,10 +415,11 @@ def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     runtime = Runtime(db)
     try:
-        assert runtime.start_scan(mode='coins', search_id=watch)
+        assert runtime.start_scan(mode='coins', search_id=watch, web_queries=3)
         assert entered.wait(5)
         snapshot = runtime.snapshot()
         assert snapshot['search_id'] == watch
+        assert snapshot['web_queries'] == 3
         assert 'results' not in snapshot
         assert not runtime.start_scan(mode='both')
     finally:
@@ -424,6 +428,7 @@ def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(
             runtime._worker.join(timeout=5)
         runtime.stop()
     assert runtime.snapshot()['search_id'] is None
+    assert runtime.snapshot()['web_queries'] == 0
     assert runtime.search_results(watch)['results'][0]['title'] == 'Owl coin'
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
     assert runtime.search_results(watch)['status'] == 'complete'
@@ -437,7 +442,7 @@ def test_wanted_changes_during_web_request_discard_stale_results_and_continue(tm
     other = wanted_search(db, name='Corinth', keywords='Corinth')
     old_query = db.get_search(changed)['web_query']
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
-    def search(query, key):
+    def search(query, key, **kwargs):
         if query == old_query:
             if change == 'delete':
                 db.delete_search(changed)
@@ -460,7 +465,7 @@ def test_selected_watch_deleted_during_scan_completes_without_stale_match_count(
     db.initialize([])
     watch = wanted_search(db)
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
-    def search(query, key):
+    def search(query, key, **kwargs):
         db.delete_search(watch)
         return []
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
@@ -478,7 +483,7 @@ def test_lost_scan_lease_discards_late_web_response_and_stops_later_queries(tmp_
     second = wanted_search(db, name='Corinth', keywords='Corinth')
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
     queries = []
-    def search(query, key):
+    def search(query, key, **kwargs):
         queries.append(query)
         db.finish_run(db.runs()[0]['id'], 'interrupted', 'Application stopped')
         if provider_error:
@@ -498,10 +503,185 @@ def test_stop_during_web_request_does_not_store_late_response(tmp_path, monkeypa
     watch = wanted_search(db)
     stop = threading.Event()
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
-    def search(query, key):
+    def search(query, key, **kwargs):
         stop.set()
         return [dict(url='https://example.com/coin', title='Coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db, stop_event=stop).run(mode='coins')
     assert result['status'] == 'interrupted'
     assert db.search_results(watch)['status'] == 'idle'
+
+
+@pytest.mark.parametrize('count', [0, 51, -1, True, 1.5, '2'])
+def test_web_query_budget_must_be_an_integer_between_one_and_fifty(tmp_path, count):
+    from coinwatch.runtime import Runtime
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    with pytest.raises(ValueError):
+        Scanner(db).run(mode='coins', search_id=watch, web_queries=count)
+    runtime = Runtime(db)
+    with pytest.raises(ValueError):
+        runtime.start_scan(mode='coins', search_id=watch, web_queries=count)
+    assert not runtime.snapshot()['running']
+    assert db.runs() == []
+
+
+@pytest.mark.parametrize('options,include_web', [({}, True), ({'kind':'scheduled'}, True), ({}, False)])
+def test_multiple_web_queries_require_a_manual_selected_opted_in_watch(tmp_path, options, include_web):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db, include_web=include_web)
+    options = dict(options)
+    if options or not include_web:
+        options['search_id'] = watch
+    with pytest.raises(ValueError):
+        Scanner(db).run(mode='coins', web_queries=2, **options)
+    assert db.runs() == []
+
+
+def test_broad_scan_uses_distinct_queries_deduplicates_and_preserves_earlier_leads(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    db.record_web_search(watch, [dict(url='https://old.example/coin', title='Earlier coin', snippet='Earlier lead')])
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    queries = []
+    def search(query, key, **options):
+        queries.append(query)
+        assert options['max_results'] == 20
+        assert not options.get('exclude_domains')
+        return [dict(url='https://new.example/shared', title='Shared coin', snippet='Potential match'),
+                dict(url=f'https://new.example/coin-{len(queries)}', title='Another coin', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=3)
+    assert result['status'] == 'complete'
+    assert len(set(queries)) == 3
+    assert result['web_queries'] == 3
+    assert result['web_leads'] == 4
+    assert len(db.search_results(watch)['results']) == 5
+    assert '3 searches attempted' in db.runs()[0]['summary']
+    # The normal next-day request must keep the broad scan's accumulated leads.
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [])
+    Scanner(db).run(mode='coins')
+    assert len(db.search_results(watch)['results']) == 5
+
+
+def test_broad_scan_diversifies_after_five_requests_using_only_returned_hosts(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([dict(id='known', name='Known', url='https://registered.example', adapter='test', enabled=False)])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    requests = []
+    def search(query, key, **options):
+        requests.append(options)
+        return [dict(url=f'https://dealer{len(requests)}.example/coin', title='Coin', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=7)
+    assert result['web_queries'] == 7
+    assert all(not call.get('exclude_domains') for call in requests[:5])
+    assert set(requests[5]['exclude_domains']) == {f'dealer{i}.example' for i in range(1, 6)}
+    assert 'registered.example' not in requests[6]['exclude_domains']
+    assert len(db.search_results(watch)['results']) == 7
+
+
+def test_broad_scan_keeps_partial_results_and_stops_on_provider_error(tmp_path, monkeypatch):
+    from coinwatch.web_search import WebSearchError
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    attempts = []
+    def search(query, key, **kwargs):
+        attempts.append(query)
+        if len(attempts) == 2:
+            raise WebSearchError('The Tavily plan usage limit has been reached.')
+        return [dict(url='https://dealer.example/coin', title='Coin', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=10)
+    assert result['status'] == 'partial'
+    assert result['web_queries'] == len(attempts) == 2
+    stored = db.search_results(watch)
+    assert stored['status'] == 'partial'
+    assert len(stored['results']) == 1
+    assert 'usage limit' in stored['error']
+
+
+def test_broad_scan_checks_for_edits_between_requests(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    attempted = []
+    def search(query, key, **kwargs):
+        attempted.append(query)
+        if len(attempted) == 2:
+            db.save_search(dict(db.get_search(watch), keywords='Alexandria'), search_id=watch)
+        return [dict(url=f'https://dealer.example/coin-{len(attempted)}', title='Coin', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=5)
+    assert result['status'] == 'complete'
+    assert result['web_queries'] == len(attempted) == 2
+    assert db.search_results(watch)['results'] == []
+    assert db.search_results(watch)['status'] == 'idle'
+
+
+def test_broad_scan_keeps_completed_queries_when_later_request_is_cancelled(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    stop = threading.Event()
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    attempted = []
+    def search(query, key, **kwargs):
+        attempted.append(query)
+        if len(attempted) == 2:
+            stop.set()
+        return [dict(url=f'https://dealer.example/coin-{len(attempted)}', title='Coin', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db, stop_event=stop).run(mode='coins', search_id=watch, web_queries=5)
+    assert result['status'] == 'interrupted'
+    assert result['web_queries'] == len(attempted) == 2
+    stored = db.search_results(watch)['results']
+    assert [row['url'] for row in stored] == ['https://dealer.example/coin-1']
+
+
+def test_broad_scan_accepts_fifty_queries_and_caps_domain_exclusions(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    requests = []
+    def search(query, key, **options):
+        requests.append(options)
+        return [dict(url=f'https://dealer{len(requests)}-{i}.example/coin', title='Coin', snippet='Potential match') for i in range(20)]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=50)
+    assert result['status'] == 'complete'
+    assert result['web_queries'] == len(requests) == 50
+    assert result['web_leads'] == 1000
+    assert len(db.search_results(watch)['results']) == 1000
+    assert all(len(request.get('exclude_domains', [])) <= 150 for request in requests)
+    assert len(requests[-1]['exclude_domains']) == 150
+
+
+def test_broad_scan_isolates_unexpected_query_errors_without_losing_successes(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    requests = []
+    def search(query, key, **kwargs):
+        requests.append(query)
+        if len(requests) == 2:
+            raise RuntimeError('Internal details: ' + key)
+        return [dict(url=f'https://dealer.example/coin-{len(requests)}', title='Coin', snippet='Potential match')]
+    monkeypatch.setattr('coinwatch.web_search.search_web', search)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=3)
+    assert result['status'] == 'partial'
+    assert result['web_queries'] == 3
+    stored = db.search_results(watch)
+    assert stored['status'] == 'partial'
+    assert len(stored['results']) == 2
+    assert 'test-secret' not in str(stored)
+    assert 'test-secret' not in str(result)

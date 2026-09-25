@@ -24,9 +24,9 @@ class RuntimeStub:
     def stop(self):
         self.stopped = True
 
-    def start_scan(self, kind="manual", mode="both", search_id=None):
+    def start_scan(self, kind="manual", mode="both", search_id=None, web_queries=1):
         self.scan_requested = True
-        self.scan_request = {"kind": kind, "mode": mode, "search_id": search_id}
+        self.scan_request = {"kind": kind, "mode": mode, "search_id": search_id, "web_queries": web_queries}
         return True
 
     def search_results(self, search_id):
@@ -146,7 +146,7 @@ def test_scan_modes_validate_scope_and_return_to_current_page(tmp_path):
         response = client.post("/scan", data={**token(db), "mode": mode, "return_to": "/discoveries"})
         assert response.status_code == 303
         assert response.headers["location"] == "/discoveries?scan=started"
-        assert runtime.scan_request == {"kind": "manual", "mode": mode, "search_id": None}
+        assert runtime.scan_request == {"kind": "manual", "mode": mode, "search_id": None, "web_queries": 1}
     assert client.post("/scan", data={**token(db), "mode": "everything"}).status_code == 400
     response = client.post("/scan", data={**token(db), "mode": "coins", "return_to": "https://other.example"})
     assert response.headers["location"] == "/?scan=started"
@@ -168,7 +168,7 @@ def test_wanted_search_create_edit_match_and_scan(tmp_path):
     assert "My denarii" in client.get("/wanted").text
     response = client.post(f"/wanted/{search['id']}/scan", data=token(db))
     assert response.status_code == 303
-    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": search["id"]}
+    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": search["id"], "web_queries": 1}
     response = client.post(f"/wanted/{search['id']}", data={**token(db), "name": "Lower budget", "coin_type": "denarius",
                                                          "currency": "GBP", "max_price": "40", "enabled": "true"})
     assert response.status_code == 303
@@ -223,3 +223,43 @@ def test_wanted_web_leads_are_escaped_and_not_misrepresented_as_catalog_coins(tm
     assert "javascript:" not in detail.text
     assert "Unverified web lead" in detail.text
     assert db.list_listings(view="all")[1] == 2
+
+
+def test_wanted_scan_accepts_custom_query_count_and_rejects_invalid_budgets(tmp_path):
+    client, db, runtime = setup_catalog(tmp_path)
+    search_id = db.save_search({"name": "Athens", "mint": "Athens", "include_web": True})
+    response = client.post(f"/wanted/{search_id}/scan", data={**token(db), "web_queries": "17"})
+    assert response.status_code == 303
+    assert runtime.scan_request["web_queries"] == 17
+    for value in ("0", "51", "-1", "1.5", "all"):
+        runtime.scan_request = None
+        response = client.post(f"/wanted/{search_id}/scan", data={**token(db), "web_queries": value})
+        assert response.status_code == 400
+        assert runtime.scan_request is None
+    assert client.post(f"/wanted/{search_id}/scan", data={"web_queries": "17"}).status_code == 403
+
+
+def test_wanted_scan_disables_web_budget_when_web_search_is_off(tmp_path):
+    client, db, runtime = setup_catalog(tmp_path)
+    search_id = db.save_search({"name": "Athens", "mint": "Athens", "include_web": False})
+    from bs4 import BeautifulSoup
+    document = BeautifulSoup(client.get(f"/wanted/{search_id}").text, "html.parser")
+    assert document.select_one('input[name="web_queries"]').has_attr("disabled")
+    response = client.post(f"/wanted/{search_id}/scan", data={**token(db), "web_queries": "5"})
+    assert response.status_code == 400
+    assert runtime.scan_requested is False
+    assert client.post(f"/wanted/{search_id}/scan", data=token(db)).status_code == 303
+
+
+def test_wanted_web_results_count_valid_domains_and_show_retained_lead_dates(tmp_path):
+    client, db, runtime = setup_catalog(tmp_path)
+    search_id = db.save_search({"name": "Athens", "mint": "Athens", "include_web": True})
+    runtime.web_results = {"status": "complete", "results": [
+        {"title": "Owl A", "url": "https://shop.example/a", "snippet": "Coin", "last_seen": "2026-09-25T12:00:00+00:00"},
+        {"title": "Owl B", "url": "https://www.shop.example/b", "snippet": "Coin"},
+        {"title": "Owl C", "url": "https://other.example/c", "snippet": "Coin"},
+    ], "error": "", "checked_at": "2026-09-25T12:00:00+00:00"}
+    response = client.get(f"/wanted/{search_id}")
+    assert response.status_code == 200
+    assert "3 retained leads across 2 domains" in response.text
+    assert "Last found 25 Sep 2026, 13:00" in response.text

@@ -188,9 +188,12 @@ def create_app(db, runtime) -> FastAPI:
             raise HTTPException(status_code=400, detail="Page must be positive")
         search = find_search(search_id)
         rows, total = db.search_matches(search_id, page=page, per_page=30)
+        web_results = runtime.search_results(search_id)
+        web_domains = {urlsplit(_safe_url(lead.get("url"))).hostname.removeprefix("www.")
+                       for lead in web_results["results"] if _safe_url(lead.get("url"))}
         return templates.TemplateResponse(request, "wanted_detail.html", context(
             request, page="wanted", search=search, rows=rows, total=total,
-            web_results=runtime.search_results(search_id), current_page=page, has_next=page * 30 < total,
+            web_results=web_results, web_domain_count=len(web_domains), current_page=page, has_next=page * 30 < total,
             prev_url=f"/wanted/{search_id}?page={page - 1}", next_url=f"/wanted/{search_id}?page={page + 1}",
             return_to=request.url.path + ("?" + request.url.query if request.url.query else ""),
         ))
@@ -235,10 +238,22 @@ def create_app(db, runtime) -> FastAPI:
         return RedirectResponse("/wanted", status_code=303)
 
     @app.post("/wanted/{search_id}/scan")
-    def wanted_scan(search_id: int, csrf_token: str = Form("")):
+    def wanted_scan(search_id: int, csrf_token: str = Form(""), web_queries: str = Form("1")):
         require_csrf(csrf_token)
-        find_search(search_id)
-        return _scan_redirect(f"/wanted/{search_id}", runtime.start_scan(mode="coins", search_id=search_id))
+        search = find_search(search_id)
+        try:
+            count = int(web_queries)
+            if not 1 <= count <= 50:
+                raise ValueError
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Choose a whole number of web queries from 1 to 50") from None
+        if count > 1 and not search["include_web"]:
+            raise HTTPException(status_code=400, detail="Enable wider-web checking under Edit search before choosing multiple web queries")
+        try:
+            started = runtime.start_scan(mode="coins", search_id=search_id, web_queries=count)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from None
+        return _scan_redirect(f"/wanted/{search_id}", started)
 
     @app.get("/discoveries")
     def discoveries(request: Request):
