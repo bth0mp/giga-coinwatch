@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Discoveries{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Discoveries</h1><p>Dealer leads found in public directories. Review the evidence before adding one to your registry.</p></div></div>
+{% if candidates %}<div class="discovery-list">{% for candidate in candidates %}
+  <article class="discovery-row">
+    <div><h2>{{ candidate.name or candidate.domain }}</h2><p class="discovery-domain">{{ candidate.domain }}</p><p>{{ candidate.reason }}</p><p class="muted">Found via {{ candidate.discovered_from }} · {{ candidate.created_at|local_time(settings.timezone) }}</p>
+      {% if candidate.evidence_url|safe_url %}<a class="text-link" href="{{ candidate.evidence_url|safe_url }}" target="_blank" rel="noopener noreferrer">View evidence</a>{% endif %}
+      {% if candidate.url|safe_url %}<a class="text-link" href="{{ candidate.url|safe_url }}" target="_blank" rel="noopener noreferrer">Visit dealer</a>{% endif %}
+    </div>
+    <div class="decision-actions"><form method="post" action="/discoveries/{{ candidate.id }}/decision"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="decision" value="accepted"><button class="button button-primary" type="submit">Add to sources</button></form><form method="post" action="/discoveries/{{ candidate.id }}/decision"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="decision" value="dismissed"><button class="button button-secondary" type="submit">Dismiss</button></form></div>
+  </article>
+{% endfor %}</div>{% else %}<div class="empty-state"><h2>No leads to review</h2><p>Discovery runs with scans. New evidence-backed dealer leads will appear here.</p></div>{% endif %}
+{% endblock %}

@@ -1,0 +1,14 @@
+services:
+  giga-coinwatch:
+    build: .
+    image: giga-coinwatch:local
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 2m
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - coinwatch_data:/data
+
+volumes:
+  coinwatch_data:

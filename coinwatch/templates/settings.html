@@ -1,0 +1,8 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="page-heading"><div><h1>Settings</h1><p>Choose when the daily scan is due in your local time zone.</p></div></div>
+<section class="panel settings-panel"><h2>Daily scan</h2><p>The app checks for missed scans when it starts or resumes. The host must be running and awake for scans to happen.</p>
+  <form method="post" action="/settings" class="settings-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label><span>Local time</span><input type="time" name="scan_time" value="{{ settings.scan_time }}" required></label><label><span>Time zone</span><input type="text" name="timezone" value="{{ settings.timezone }}" required list="timezones" aria-describedby="timezone-help"><small id="timezone-help">Use an IANA name, such as Europe/London.</small></label><datalist id="timezones"><option value="Europe/London"><option value="Europe/Paris"><option value="America/New_York"><option value="America/Los_Angeles"><option value="UTC"></datalist><button class="button button-primary" type="submit">Save schedule</button></form>
+</section>
+{% endblock %}

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "giga-coinwatch"
+version = "0.1.0"
+description = "Private fixed-price ancient coin monitor and dealer discovery"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "jinja2>=3.1.5,<4", "beautifulsoup4>=4.12,<5", "python-multipart>=0.0.20,<1", "tzdata>=2025.1", "httpx>=0.28,<1"]
+
+[project.optional-dependencies]
+test = ["pytest>=8,<10"]
+
+[project.scripts]
+giga-coinwatch = "coinwatch.__main__:main"
+coinwatch = "coinwatch.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["coinwatch*"]
+
+[tool.setuptools.package-data]
+coinwatch = ["templates/*.html", "static/*", "seeds.json", "known-domains.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

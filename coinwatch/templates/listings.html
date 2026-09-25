@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Coins{% endblock %}
+{% block content %}
+<div class="page-heading">
+  <div><h1>Coins</h1><p>Fixed-price ancient coins observed at your sources.</p></div>
+  <div class="count-strip" aria-label="Catalog counts">
+    <span><strong>{{ stats.new }}</strong> new</span><span><strong>{{ stats.total }}</strong> total</span><span><strong>{{ stats.saved }}</strong> saved</span>
+  </div>
+</div>
+<div class="view-tabs" aria-label="Listing view">
+  <a href="/?view=new" {% if view == 'new' %}aria-current="page"{% endif %}>New</a>
+  <a href="/?view=all" {% if view == 'all' %}aria-current="page"{% endif %}>All listings</a>
+  <a href="/?view=saved" {% if view == 'saved' %}aria-current="page"{% endif %}>Saved</a>
+</div>
+<form class="filter-bar" method="get" action="/" aria-label="Filter coins">
+  <input type="hidden" name="view" value="{{ view }}">
+  <label class="search-field"><span>Search</span><input type="search" name="q" placeholder="Coin title or ruler" value="{{ filters.q|default('') }}"></label>
+  <label><span>Source</span><select name="source"><option value="">Any source</option>{% for source in sources %}<option value="{{ source.id }}" {% if filters.source|default('')|string == source.id|string %}selected{% endif %}>{{ source.name }}</option>{% endfor %}</select></label>
+  <label><span>Category</span><input type="text" name="category" placeholder="Any category" value="{{ filters.category|default('') }}"></label>
+  <label class="currency-field"><span>Currency</span><input type="text" name="currency" maxlength="3" placeholder="e.g. GBP" value="{{ filters.currency|default('') }}"></label>
+  <label class="price-field"><span>Max price</span><input type="number" min="0" step="0.01" name="max_price" placeholder="Amount" value="{{ filters.max_price|default('') }}"></label>
+  <button class="button button-secondary" type="submit">Apply filters</button>
+</form>
+<p class="result-count">{{ total }} {{ 'listing' if total == 1 else 'listings' }}{% if filters.max_price|default('') %} · {{ filters.currency }} {{ filters.max_price }} or less{% endif %}</p>
+{% if rows %}
+<div class="coin-grid">
+  {% for coin in rows %}
+  <article class="coin-card">
+    <div class="coin-image">
+      {% if coin.image_url|safe_url %}<img src="{{ coin.image_url|safe_url }}" alt="Coin photograph from {{ coin.source_name }}" loading="lazy">{% else %}<div class="image-empty">No image from seller</div>{% endif %}
+      {% if coin.is_new %}<span class="new-flag">New</span>{% endif %}
+    </div>
+    <div class="coin-body">
+      <p class="coin-source">{{ coin.source_name }}</p>
+      <h2>{% if coin.url|safe_url %}<a href="{{ coin.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ coin.title }}</a>{% else %}{{ coin.title }}{% endif %}</h2>
+      <div class="coin-facts"><span>{{ coin.category }}</span><span>{{ coin.availability }}</span></div>
+      <div class="coin-bottom"><p class="coin-price">{{ coin.currency }} {{ coin.price }}</p>
+        <form action="/listings/{{ coin.id }}/save" method="post">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="return_to" value="{{ return_to }}">
+          <button class="save-button" type="submit" aria-label="{{ 'Remove saved coin' if coin.saved else 'Save coin' }}" title="{{ 'Remove saved coin' if coin.saved else 'Save coin' }}">{{ '★' if coin.saved else '☆' }}</button>
+        </form>
+      </div>
+      <div class="seen-date"><span>First found {{ coin.first_seen|local_time(settings.timezone) }}</span><span>Last checked {{ coin.last_seen|local_time(settings.timezone) }}</span>{% if coin.listed_at %}<span>Seller listed {{ coin.listed_at|local_time(settings.timezone) }}</span>{% endif %}</div>
+    </div>
+  </article>
+  {% endfor %}
+</div>
+<nav class="pagination" aria-label="Listing pages">
+  {% if current_page > 1 %}<a href="{{ prev_url }}">Previous</a>{% else %}<span></span>{% endif %}
+  <span>Page {{ current_page }}</span>
+  {% if has_next %}<a href="{{ next_url }}">Next</a>{% else %}<span></span>{% endif %}
+</nav>
+{% else %}
+<div class="empty-state">
+  <h2>{% if view == 'saved' %}No saved coins yet{% elif view == 'new' %}No new coins yet{% else %}No listings match{% endif %}</h2>
+  <p>{% if view == 'saved' %}Save a coin from the catalog to keep it here.{% elif view == 'new' %}The first complete scan records existing stock as a baseline. Later additions appear here.{% else %}Try fewer filters, or check whether a source has completed its first scan.{% endif %}</p>
+  {% if view != 'all' %}<a class="text-link" href="/?view=all">Browse all listings</a>{% else %}<a class="text-link" href="/sources">Check sources</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}
