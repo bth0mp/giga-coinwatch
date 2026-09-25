@@ -11,7 +11,7 @@ def test_only_recent_available_web_sales_are_visible_and_sold_rechecks_hide_them
     now = datetime.now(timezone.utc)
     watch = db.save_search({'keywords': 'owl', 'include_web': False})
     def sale(url, status='available', checked=now):
-        return dict(url=url, title='Athens owl', sale_status=status, price='120.00', currency='EUR',
+        return dict(url=url, title='Greek Athens owl tetradrachm', sale_status=status, price='120.00', currency='EUR',
                     sale_checked_at=checked.isoformat(), sale_reason='Product page checked')
     db.record_web_search(watch, [sale('https://shop.example/current'),
         sale('https://shop.example/old', checked=now-timedelta(days=2)),
@@ -21,6 +21,23 @@ def test_only_recent_available_web_sales_are_visible_and_sold_rechecks_hide_them
     assert [r['url'] for r in Runtime(db).search_results(watch)['results']] == ['https://shop.example/current']
     db.record_web_search(watch, [sale('https://shop.example/current', status='rejected')], merge=True)
     assert Runtime(db).search_results(watch)['results'] == []
+
+
+def test_legacy_available_noncoin_titles_are_hidden_without_refreshing_sale_checks(db):
+    from datetime import datetime, timezone
+    from coinwatch.runtime import Runtime
+    watch = db.save_search({'keywords': 'owl', 'include_web': True})
+    checked = datetime.now(timezone.utc).isoformat(timespec='seconds')
+    titles = ['Greek Athens owl tetradrachm', 'Monedas antiguas España',
+              'TARJETA POSTAL NUMISMATICA MONEDAS ANTIGUAS DE HISPANIA']
+    db.record_web_search(watch, [dict(url=f'https://shop.example/{i}', title=title,
+        sale_status='available', price='120', currency='EUR', sale_checked_at=checked)
+        for i, title in enumerate(titles)])
+    original = db.search_results(watch)['results']
+    visible = Runtime(db).search_results(watch)['results']
+    assert [row['title'] for row in visible] == [titles[0]]
+    assert visible[0]['sale_checked_at'] == checked
+    assert db.search_results(watch)['results'] == original
 
 
 def test_web_sale_merge_does_not_refresh_old_verification_and_rejects_invalid_price(db):

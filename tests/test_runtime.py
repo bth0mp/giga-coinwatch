@@ -446,7 +446,7 @@ def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(
         entered.set()
         if not release.wait(5):
             raise TimeoutError('Test did not release search')
-        return [dict(url='https://example.com/owl', title='Owl coin', snippet='Potential match')]
+        return [dict(url='https://example.com/owl', title='Greek owl coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     runtime = Runtime(db)
     try:
@@ -466,7 +466,7 @@ def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(
     assert runtime.snapshot()['search_id'] is None
     assert runtime.snapshot()['web_queries'] == 0
     assert runtime.snapshot()['web_minutes'] == 0
-    assert runtime.search_results(watch)['results'][0]['title'] == 'Owl coin'
+    assert runtime.search_results(watch)['results'][0]['title'] == 'Greek owl coin'
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
     assert runtime.search_results(watch)['status'] == 'complete'
 

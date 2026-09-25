@@ -15,8 +15,9 @@ _INFO_HOSTS = ('wikipedia.org', 'wikimedia.org', 'numista.com', 'acsearch.info',
                'facebook.com', 'instagram.com', 'youtube.com', 'pinterest.com', 'x.com', 'twitter.com')
 _INFO_PATH = re.compile(r'/(?:blog|blogs|article|articles|news|wiki|reference|references|guide|guides|auction|auctions|archive|sold)(?:/|$)', re.I)
 _COIN = re.compile(r'\b(?:coin|coins|denarius|denarii|denier|tetradrachm\w*|drachm\w*|drachme|obol\w*|stater\w*|aureus|solidus|solidi|sesterti\w*|follis|antoninian\w*|nummus|tremissis|didrachm\w*|hemidrachm\w*|as|dupondius|münz\w*|monnaie\w*|moneda\w*|monet[ae]|moeda\w*)\b', re.I)
-_ANCIENT = re.compile(r'\b(?:ancient|roman|greek|byzantine|celtic|antiqu\w*|antik\w*|antich\w*|antigu\w*|antig\w*|griech\w*|römisch\w*|denarius|tetradrachm\w*|hemidrachm\w*|didrachm\w*|aureus|solidus|sesterti\w*|follis|antoninian\w*|nummus|obol\w*|stater\w*|drachm\w*|tremissis|B\.?C\.?E?|A\.?D|v\.\s*Chr)\b', re.I)
-_EXCLUDED = re.compile(r'\b(?:replica|reproduction|copy|copies|book|books|guide|catalogue|catalog|bulk|lot of|lots of|uncleaned|unidentified|unsearched|modern|medal|medallion|token|202\d|201\d|200\d|19\d\d|18\d\d|50p)\b|^\s*\d+\s+(?:(?:ancient|roman|greek|byzantine|celtic)\s+)+coins?\b', re.I)
+# "Antigua/antique/antike" alone means old, not necessarily an ancient-period coin.
+_ANCIENT = re.compile(r'\b(?:ancient|roman(?:s|[ao]s?|[ei])?|romain(?:es?|s)?|greek|griech\w*|grieg[oa]s?|grecs?|grecques?|greco|greca|greci|greche|römisch\w*|byzant\w*|bizantin\w*|celtic|denarius|tetradrachm\w*|hemidrachm\w*|didrachm\w*|aureus|solidus|sesterti\w*|follis|antoninian\w*|nummus|obol\w*|stater\w*|drachm\w*|tremissis|B\.?C\.?E?|A\.?D|v\.\s*Chr|\d{1,4}\s*(?:a\.?\s*C|av\.?\s*J[.\s-]*C))\b', re.I)
+_EXCLUDED = re.compile(r'\b(?:replica|reproduction|copy|copies|book|books|guide|catalogue|catalog|bulk|lot of|lots of|lotes?|postcards?|postal(?:es)?|billetes?|banknotes?|uncleaned|unidentified|unsearched|modern|medal|medallion|token|202\d|201\d|200\d|19\d\d|18\d\d|50p)\b|^\s*\d+\s+(?:(?:ancient|roman|greek|byzantine|celtic)\s+)+coins?\b', re.I)
 _NEGATIVE = re.compile(r'\b(?:sold(?:\s*out)?|out[ -]of[ -]stock|outofstock|reserved|unavailable|not available|pre[ -]?order|back[ -]?order\w*|ausverkauft|nicht verfügbar|vendu\w*|vendido\w*|agotado\w*|esaurito|épuisé|indisponible)\b', re.I)
 _IN_STOCK = re.compile(r'\b(?:in[ -]stock|instock|available|auf lager|vorrätig|verfügbar|en stock|disponible|disponibili\w*|disponivel|disponível|em estoque)\b', re.I)
 _BUY = re.compile(r'\b(?:add to (?:cart|basket|bag)|buy now|purchase|in den warenkorb|ajouter au panier|ajouter au chariot|aggiungi al carrello|añadir al carrito|agregar al carrito|adicionar ao carrinho|comprar|kopen)\b', re.I)
@@ -24,6 +25,12 @@ _BID = re.compile(r"\b(?:current bid|starting bid|place(?: a)? bid|bid now|biddi
 _RELATED = '.related, .related-products, .related_products, .upsells, .up-sells, .cross-sells, .recommendations, .product-recommendations, nav, header, footer, aside'
 _PRICE_SELECTORS = ('ins .amount', 'ins', '.price-new', '.price-item--sale', '[itemprop="price"]', '.price', '.product-price', '.ProductItem-product-price', '.woocommerce-Price-amount')
 _CURRENCIES = {'USD', 'GBP', 'EUR', 'CAD', 'AUD', 'NZD', 'CHF', 'JPY', 'CNY', 'HKD', 'SGD', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'RON', 'BRL', 'INR', 'ZAR', 'TRY', 'ILS'}
+
+
+def individual_ancient_coin_title(title: str) -> bool:
+    """Conservative title-only classification; this does not establish a live sale."""
+    return isinstance(title, str) and bool(
+        not _EXCLUDED.search(title) and _COIN.search(title) and _ANCIENT.search(title))
 
 
 def _text(node):
@@ -177,7 +184,7 @@ def _check_page(result, page):
         return 'rejected', 'The seller marks this primary item sold, unavailable, reserved, or not ready to ship.', '', '', ''
     if any(_types(node).intersection({'Article', 'NewsArticle', 'BlogPosting'}) for node in nodes):
         return 'rejected', 'This page is an article rather than an individual coin listing.', '', '', ''
-    if (_EXCLUDED.search(title) or not (_COIN.search(title) and _ANCIENT.search(title))):
+    if not individual_ancient_coin_title(title):
         return 'rejected', 'The primary item is not a supported individual ancient coin.', '', '', ''
     scope, explicit_product = _product_scope(headings[0])
     if any(node.select_one('h1, h2, h3, h4, h5, h6, [itemprop="name"]')

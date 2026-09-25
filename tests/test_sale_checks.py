@@ -235,3 +235,33 @@ def test_catalog_product_cards_cannot_supply_primary_product_sale_evidence(count
     card = '<div class="product"><h2>Greek stater</h2><p class="stock">In stock</p><span class="price">£125</span><a href="/cart?add=123">Add to cart</a></div>'
     html = '<main><div class="product"><h1>Ancient Greek coins</h1><div class="products">' + card * count + '</div></div></main>'
     assert verify_sale({'url': URL}, Fetcher(html))['sale_status'] != 'available'
+
+
+@pytest.mark.parametrize('title', [
+    'Monedas antiguas de coleccion.',
+    'Bonito lote de monedas antiguas Francia',
+    'TARJETA POSTAL NUMISMATICA MONEDAS ANTIGUAS DE HISPANIA',
+    'Billetes y monedas antiguas ESPAÑA',
+    'BONITO LOTE DE. 3. MONEDAS ANTIGUAS ESPAÑOLAS',
+    'Monedas antiguas España',
+    'Coleccion Numismatica de Monedas Antiguas de Alemania-',
+    'Monnaie antique de France', 'Antike Münze Deutschland', 'Moeda antiga de Portugal',
+    'Lote de monedas romanas', 'Tarjeta postal de moneda griega', 'Billete con moneda romana',
+    'Old Romanian coin', 'Romantic coin design',
+    'Moneda Grecia 2 euros', 'Moneda Grecia 50 céntimos',
+])
+def test_old_coins_lots_postcards_and_banknotes_are_not_ancient_single_coins(title):
+    html = product_html(title=title, schema=product_schema(name=title))
+    assert verify_sale({'url': URL}, Fetcher(html))['sale_status'] == 'rejected'
+
+
+@pytest.mark.parametrize('title', [
+    'Moneda romana Augusto denario', 'Moneda griega Atenas plata',
+    'Monnaie romaine Auguste argent', 'Monnaie grecque Athènes argent',
+    'Moeda romana Augusto prata', 'Moneta bizantina Giustiniano bronzo', 'Moneta greca Atene argento',
+    'Römische Münze Augustus Silber', 'Celtic coin silver unit', 'Coin of the Romans Augustus',
+    'Moneda Atenas 450 a.C.', 'Monnaie Athènes 450 av. J.-C.',
+])
+def test_explicit_ancient_periods_remain_supported_in_multiple_languages(title):
+    html = product_html(title=title, schema=product_schema(name=title))
+    assert verify_sale({'url': URL}, Fetcher(html))['sale_status'] == 'available'
