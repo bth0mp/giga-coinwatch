@@ -9,6 +9,10 @@ from urllib.parse import urlencode
 TEXT_FIELDS = {'name': 120, 'keywords': 500, 'coin_type': 200, 'mint': 200,
                'ruler': 200, 'exclude_terms': 500, 'category': 100, 'currency': 3}
 CRITERIA = ('keywords', 'coin_type', 'mint', 'ruler', 'category', 'exclude_terms', 'currency', 'max_price')
+# Deliberately narrow: alternate spellings of the same region, not general synonyms.
+BOEOTIA_SPELLINGS = ('Boeotia', 'Boiotia', 'Boetia', 'Boeotian', 'Boiotian', 'Boetian', 'Béotie', 'Beocia', 'Beozia')
+_BOEOTIA_WORDS = {'boeotia', 'boiotia', 'boetia', 'boeotian', 'boiotian', 'boetian', 'beotie', 'beocia', 'beozia'}
+_GREEK = re.compile(r'\b(?:greek|griech\w*|grieg[oa]s?|grecs?|grecques?|greco|greca|greci|greche|greg[oa]s?|grecia|grece)\b')
 
 
 def normalize(text):
@@ -29,6 +33,36 @@ def terms(text):
     if len(result) > 30:
         raise ValueError('Use at most 30 words or phrases per field.')
     return [term for term in result if normalize(term)]
+
+
+def _raw_terms(text):
+    """Keep explicit double quotes so literal phrases are never alias-expanded."""
+    lexer = shlex.shlex(text, posix=False)
+    lexer.whitespace_split = True
+    lexer.commenters = ''
+    lexer.quotes = '"'
+    lexer.escape = ''
+    return [term for term in lexer if normalize(term)]
+
+
+def _concepts(text):
+    return ' '.join('boeotia' if word in _BOEOTIA_WORDS else word for word in normalize(text).split())
+
+
+def _term_specs(text):
+    specs = []
+    for raw in _raw_terms(text):
+        quoted = raw.startswith('"') and raw.endswith('"')
+        value = normalize(raw) if quoted else _concepts(raw)
+        if not quoted and set(value.split()) == {'boeotia'}:
+            value = 'boeotia'
+        specs.append((f' {value} ', quoted))
+    return specs
+
+
+def _contains(spec, literal, concepts):
+    value, quoted = spec
+    return value in (literal if quoted else concepts)
 
 
 def validate_search(values):
@@ -67,13 +101,14 @@ def validate_search(values):
 
 
 def matcher(search):
-    include = [f' {normalize(term)} ' for key in CRITERIA[:5] for term in terms(search[key])]
-    exclude = [f' {normalize(term)} ' for term in terms(search['exclude_terms'])]
+    include = [spec for key in CRITERIA[:5] for spec in _term_specs(search[key])]
+    exclude = _term_specs(search['exclude_terms'])
     ceiling = Decimal(search['max_price']) if search['max_price'] else None
 
     def matches(title, category, currency, price):
         text = f' {normalize(title or "")} {normalize(category or "")} '
-        if not all(term in text for term in include) or any(term in text for term in exclude):
+        concepts = f' {_concepts(text)} '
+        if not all(_contains(spec, text, concepts) for spec in include) or any(_contains(spec, text, concepts) for spec in exclude):
             return False
         if search['currency'] and currency != search['currency']:
             return False
@@ -88,8 +123,46 @@ def matcher(search):
     return matches
 
 
+def web_matcher(search):
+    """Match verified seller fields only; search snippets and URL hints are not evidence."""
+    matches = matcher({**search, 'category': ''})
+    categories = _term_specs(search['category'])
+
+    def matches_row(row):
+        title = row.get('title') or ''
+        if not matches(title, '', row.get('currency') or '', row.get('price') or ''):
+            return False
+        literal, concepts = f' {normalize(title)} ', f' {_concepts(title)} '
+        for spec in categories:
+            if spec == (' greek ', False):
+                # Boeotia is Greek geography; other categories still need explicit title evidence.
+                if not (_GREEK.search(literal) or ' boeotia ' in concepts):
+                    return False
+            elif not _contains(spec, literal, concepts):
+                return False
+        return True
+    return matches_row
+
+
+def _query_cores(search):
+    parts, alias_seen = [], False
+    for key in CRITERIA[:5]:
+        for raw in _raw_terms(search[key]):
+            words = set(normalize(raw).split())
+            if not raw.startswith('"') and words and words <= _BOEOTIA_WORDS:
+                if not alias_seen:
+                    parts.append(None)
+                    alias_seen = True
+            else:
+                parts.append(raw)
+    if alias_seen:
+        return [' '.join(f'"{spelling}"' if part is None else part for part in parts)
+                for spelling in BOEOTIA_SPELLINGS]
+    return [' '.join(search[k] for k in CRITERIA[:5] if search[k])]
+
+
 def with_web_query(search):
-    query = ' '.join(search[k] for k in CRITERIA[:5] if search[k]) + ' ancient coins buy fixed price'
+    query = _query_cores(search)[0] + ' ancient coins buy fixed price'
     for term in terms(search['exclude_terms']):
         query += ' -' + ('"' + term + '"' if ' ' in term else term)
     search['web_query'] = query
@@ -98,28 +171,35 @@ def with_web_query(search):
 
 
 def web_query_variants(search, count=1):
-    """Vary shop wording internationally without dropping collector constraints."""
+    """Vary known spellings and purchase intent while preserving all other constraints."""
     if type(count) is not int or not 1 <= count <= 50:
         raise ValueError('Choose a whole number from 1 to 50 web queries.')
-    core = ' '.join(search[k] for k in CRITERIA[:5] if search[k])
+    cores = _query_cores(search)
     excluded = ''.join(' -' + ('"' + term + '"' if ' ' in term else term)
                        for term in terms(search['exclude_terms']))
     phrases = (
         'ancient coins buy fixed price',
-        'antike Münzen kaufen',
-        'monnaies antiques vente',
-        'monedas antiguas comprar',
-        'monete antiche vendita',
-        'moedas antigas comprar',
         'ancient coin in stock',
-        'ancient coin dealer inventory',
-        'ancient numismatic shop',
+        'ancient coin buy now',
+        'ancient coin add to cart',
         'ancient coins for sale',
+        'Münzen Festpreis auf Lager kaufen',
+        'monnaies prix fixe en stock',
+        'monedas precio fijo comprar',
+        'monete prezzo fisso disponibili',
+        'moedas preço fixo em estoque',
     )
-    queries = []
-    for angle in ('', ' online', ' catalogue', ' store', ' numismatics'):
-        for phrase in phrases:
-            query = f'{core} {phrase}{angle}{excluded}'
+    alias_seen = len(cores) > 1
+    first = f'{cores[0]} {phrases[0]}{excluded}'
+    queries = [first] if len(first) <= 1000 else []
+    if len(queries) == count:
+        return queries
+    angles = ('', ' available', ' purchase', ' order online', ' shop stock')
+    for round_number in range(len(cores) if alias_seen else len(angles)):
+        for index, phrase in enumerate(phrases):
+            selected_core = cores[(round_number + index) % len(cores)]
+            angle = '' if alias_seen else angles[round_number]
+            query = f'{selected_core} {phrase}{angle}{excluded}'
             # Saved searches can already be near the provider's length limit.
             # Skip an overlong variation instead of silently losing a criterion.
             if len(query) <= 1000 and query not in queries:

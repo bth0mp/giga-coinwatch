@@ -227,9 +227,9 @@ class Fetcher:
                         retry_date = retry_date.replace(tzinfo=timezone.utc)
                     wait = max(0, (retry_date-datetime.now(timezone.utc)).total_seconds())
                 except (ValueError, TypeError, OverflowError):
-                    raise FetchError('Site requested a later retry with an unrecognized Retry-After value.') from None
+                    raise FetchError(f'HTTP {status}: site requested a later retry with an unrecognized Retry-After value.') from None
             if wait > 30:
-                raise FetchError(f'Site requested a later retry ({retry}).')
+                raise FetchError(f'HTTP {status}: site requested a later retry.')
             self._pause(wait)
         raise FetchError('Request failed.')
 

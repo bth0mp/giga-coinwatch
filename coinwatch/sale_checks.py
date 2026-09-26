@@ -1,13 +1,15 @@
 """Conservative, one-page verification of individual fixed-price ancient coins."""
 import json
 import re
+import socket
+import ssl
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 
 from bs4 import BeautifulSoup
 
-from .fetch import validate_url_shape
+from .fetch import FetchError, validate_url_shape
 
 _INFO_HOSTS = ('wikipedia.org', 'wikimedia.org', 'numista.com', 'acsearch.info', 'coinarchives.com',
                'numisbids.com', 'sixbid.com', 'wildwinds.com', 'numismatics.org', 'reddit.com',
@@ -45,7 +47,48 @@ def _identity(url):
     parsed = validate_url_shape(url)
     query = [(key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
              if not key.lower().startswith('utm_') and key.lower() not in ('gclid', 'fbclid')]
-    return urlunsplit((parsed.scheme, parsed.netloc.lower().removeprefix('www.'), parsed.path.rstrip('/') or '/', urlencode(query), ''))
+    host = parsed.netloc.lower().removeprefix('www.')
+    if parsed.port == (443 if parsed.scheme == 'https' else 80):
+        host = host.rsplit(':', 1)[0]
+    return urlunsplit((parsed.scheme, host, parsed.path.rstrip('/') or '/', urlencode(query), ''))
+
+
+def _fetch_failure_reason(error):
+    """Use fixed messages so exception text, request URLs and credentials stay private."""
+    if isinstance(error, FetchError):
+        message = str(error).lower()
+        if message.startswith('robots.txt disallows'):
+            return 'Seller robots.txt disallows automated checks; open the listing in your browser.'
+        if message.startswith(('robots.txt ', 'too many robots.txt redirects')):
+            return 'Seller robots.txt could not be verified; retry later.'
+        if message.startswith('scan time budget reached'):
+            return 'Web-check time limit reached; increase the time limit or run another scan.'
+        if message.startswith('scan stopped.'):
+            return 'Sale check was cancelled; run another scan to retry.'
+        if message.startswith('cannot resolve '):
+            return 'Seller hostname could not be resolved; retry later.'
+        if message.startswith('the site requires a browser challenge'):
+            return 'Seller requires a browser challenge; open the listing in your browser.'
+        status = re.match(r'^http ([45]\d{2})\b', message)
+        if status:
+            code = status.group(1)
+            if code == '403':
+                return 'Seller denied automated access (HTTP 403); open the listing in your browser.'
+            if code == '429':
+                return 'Seller rate limit reached (HTTP 429); retry later.'
+            if code == '404':
+                return 'Seller page was not found (HTTP 404); it may have moved or been removed.'
+            if code.startswith('5'):
+                return f'Seller server error (HTTP {code}); retry later.'
+            return f'Seller returned HTTP {code}; check the listing in your browser.'
+    for cause in (error, error.__cause__):
+        if isinstance(cause, TimeoutError):
+            return 'Seller page timed out; retry later.'
+        if isinstance(cause, socket.gaierror):
+            return 'Seller hostname could not be resolved; retry later.'
+        if isinstance(cause, ssl.SSLError):
+            return 'Seller TLS connection failed; retry later or check the listing in your browser.'
+    return 'The seller page could not be inspected reliably; availability is unverified.'
 
 
 def _walk(value):
@@ -263,6 +306,6 @@ def verify_sale(result: dict, fetcher) -> dict:
         checked.update(sale_status=status, sale_reason=reason, price=price, currency=currency)
         if status == 'available':
             checked['title'] = title
-    except Exception:
-        checked.update(sale_reason='The seller page could not be inspected reliably; availability is unverified.')
+    except Exception as error:
+        checked.update(sale_reason=_fetch_failure_reason(error))
     return checked

@@ -40,6 +40,18 @@ def test_http_date_retry_after_defers_instead_of_retrying_immediately(monkeypatc
         fetcher._request_retry('https://example.com/')
 
 
+@pytest.mark.parametrize('status', [429, 503])
+@pytest.mark.parametrize('retry_after', ['120', 'private api_key=secret'])
+def test_deferred_retry_preserves_http_status_without_echoing_retry_header(monkeypatch, status, retry_after):
+    from coinwatch.fetch import Fetcher
+    fetcher = Fetcher(delay=0)
+    monkeypatch.setattr(fetcher, '_request', lambda url: (status, {'retry-after': retry_after}, ''))
+    with pytest.raises(FetchError) as caught:
+        fetcher._request_retry('https://example.com/')
+    assert str(caught.value).startswith(f'HTTP {status}:')
+    assert retry_after not in str(caught.value)
+
+
 def test_complete_content_length_response_does_not_touch_closed_socket(monkeypatch):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread

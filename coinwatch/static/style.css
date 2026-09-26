@@ -80,6 +80,8 @@ a.button { display: inline-block; text-decoration: none; }
 .search-edit { margin-bottom: 28px; }
 .search-edit > summary { font-weight: 600; cursor: pointer; }
 .search-edit[open] > summary { margin-bottom: 20px; }
+.check-summary { margin-top: 24px; }
+.check-summary .table-wrap { margin-bottom: 16px; }
 .search-edit .wanted-form { max-width: 780px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .search-edit .wanted-form .wide-field { grid-column: 1 / -1; }
 .search-edit .wanted-form > .button { justify-self: start; }

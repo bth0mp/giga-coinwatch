@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from .fetch import Fetcher
@@ -50,7 +51,7 @@ class Scanner:
 
     def _scan_web(self, searches, errors, notes, query_limit=1, web_minutes=10):
         from .sale_checks import verify_sale
-        from .searches import web_query_variants
+        from .searches import CRITERIA, web_matcher, web_query_variants
         from .web_search import WebSearchError, load_api_key, search_web
         searches = [search for search in searches if search['include_web']]
         if not searches:
@@ -77,7 +78,8 @@ class Scanner:
                 current = self.db.get_search(search['id'])
             except ValueError:
                 current = None
-            if not current or not current['include_web'] or current['web_query'] != search['web_query']:
+            if (not current or not current['include_web'] or current['web_query'] != search['web_query']
+                    or any(current[key] != search[key] for key in CRITERIA)):
                 if search['id'] not in changed:
                     notes.append(f"Wanted search \"{search['name']}\" changed or was removed; remaining web work was skipped.")
                     changed.add(search['id'])
@@ -93,56 +95,102 @@ class Scanner:
                 budget_reached = True
             return False
 
+        def cooling_down(row):
+            if row.get('sale_status') == 'unverified' and row.get('sale_reason', '').startswith((
+                    'Web-check time limit reached;', 'Sale check was cancelled;')):
+                return False
+            days = {'unverified': 1, 'rejected': 7}.get(row.get('sale_status'))
+            if not days or not row.get('sale_checked_at'):
+                return False
+            try:
+                checked = datetime.fromisoformat(row['sale_checked_at'].replace('Z', '+00:00'))
+                now = datetime.now(timezone.utc)
+                return now - timedelta(days=days) < checked <= now
+            except (TypeError, ValueError):
+                return False
+
+        def assess(state, row):
+            search = state['search']
+            if not can_work(search) or not has_budget():
+                return False
+            url = row['url']
+            if url in state['gathered']:
+                return True
+            if url not in cache:
+                previous = state['retained'].get(url, {})
+                if cooling_down(previous):
+                    state['skipped'].add(url)
+                    return True
+                self.progress(phase='Checking sale listings', source=search['name'])
+                cache[url] = verify_sale(row, sale_fetcher)
+                has_budget()
+            checked = dict(cache[url])
+            if checked['sale_status'] == 'available' and not state['matches'](checked):
+                checked.update(sale_status='rejected', price='', currency='',
+                               sale_reason='The verified seller title or offer does not match this wanted search\'s criteria.')
+            state['gathered'][url] = checked
+            state.update(successful=True, dirty=True)
+            return True
+
+        def checkpoint(state):
+            search = state['search']
+            if not can_work(search):
+                return False
+            if not state['dirty']:
+                return True
+            current_errors = state['errors'] or ([state['prior_error']] if not state['query_succeeded'] and state['prior_error'] else [])
+            message = '; '.join(current_errors + ([budget_message] if budget_reached else [])) or None
+            recorded = self.db.record_web_search(
+                search['id'], list(state['gathered'].values()) if state['successful'] else None,
+                message, expected_query=search['web_query'], expected_search=search, run_id=self.run_id, merge=True)
+            if not recorded:
+                can_work(search)
+                return False
+            stored.update({(search['id'], url): row for url, row in state['gathered'].items()})
+            state['dirty'] = False
+            return True
+
+        def check_rows(state, rows):
+            for index, row in enumerate(rows):
+                if not assess(state, row):
+                    break
+                if (index + 1) % 20 == 0 and not checkpoint(state):
+                    break
+            checkpoint(state)
+
+        states = []
         for search in searches[:5]:
-            if self.stop_event.is_set() or budget_reached:
-                break
             if not can_work(search):
                 continue
             try:
-                retained = self.db.search_results(search['id'])['results']
+                previous = self.db.search_results(search['id'])
             except ValueError:
                 continue
+            states.append(dict(search=search, retained={row['url']: row for row in previous['results']},
+                               matches=web_matcher(search), gathered={}, skipped=set(), errors=[],
+                               successful=False, dirty=False, query_succeeded=False, prior_error=previous['error']))
+
+        # Refresh known matches for every selected watch before spending time on new candidates.
+        for state in states:
+            if self.stop_event.is_set() or budget_reached:
+                break
+            priority = [row for row in state['retained'].values()
+                        if row['sale_status'] == 'available' and state['matches'](row)]
+            check_rows(state, sorted(priority, key=lambda row: row.get('sale_checked_at') or ''))
+
+        for state in states:
+            if self.stop_event.is_set() or budget_reached:
+                break
+            search = state['search']
             variants = (web_query_variants(search, query_limit) if query_limit > 1 else [search['web_query']]) if api_key else []
-            gathered, search_errors, successful = {}, [], False
-
-            def assess(row):
-                if not can_work(search) or not has_budget():
-                    return False
-                url = row['url']
-                if url not in cache:
-                    self.progress(phase='Checking sale listings', source=search['name'])
-                    cache[url] = verify_sale(row, sale_fetcher)
-                    has_budget()
-                gathered[url] = cache[url]
-                return True
-
-            def checkpoint():
-                if not can_work(search):
-                    return False
-                message = '; '.join(search_errors + ([budget_message] if budget_reached else [])) or None
-                recorded = self.db.record_web_search(
-                    search['id'], list(gathered.values()) if successful else None,
-                    message, expected_query=search['web_query'], run_id=self.run_id, merge=True)
-                if not recorded:
-                    can_work(search)
-                    return False
-                stored.update(gathered)
-                return True
-
             for index, query in enumerate(variants):
                 if not can_work(search) or not has_budget():
                     break
                 self.progress(phase=f'Searching the wider web ({index + 1}/{len(variants)})', source=search['name'])
-                options = {'max_results': 20}
-                if index >= 5:
-                    hosts = (urlsplit(url).hostname for url in gathered)
-                    options['exclude_domains'] = list(dict.fromkeys(
-                        host.lower().removeprefix('www.') for host in hosts
-                        if host and '.' in host and not host.rsplit('.', 1)[-1].isdigit()))[:150]
                 queries += 1
                 error, halt_broad_scan = None, False
                 try:
-                    results = search_web(query, api_key, **options)
+                    results = search_web(query, api_key, max_results=20)
                 except WebSearchError as e:
                     error = str(e)
                     halt_broad_scan = query_limit > 1
@@ -151,13 +199,14 @@ class Scanner:
                     log.warning('Web search failed for wanted search %s (%s)', search['id'], type(e).__name__)
                     error = 'Wider web search failed. Please try again later.'
                 else:
-                    successful = True
+                    state.update(successful=True, dirty=True, query_succeeded=True)
                     for result in results:
-                        if not assess(result):
+                        if not assess(state, result):
                             break
                 if error:
-                    search_errors.append(error)
-                if not checkpoint():
+                    state['errors'].append(error)
+                    state['dirty'] = True
+                if not checkpoint(state):
                     break
                 if error:
                     errors.append(f"{search['name']}: {error}")
@@ -167,23 +216,17 @@ class Scanner:
                 if budget_reached:
                     break
 
-            checked_retained = 0
-            for row in sorted(retained, key=lambda item: item.get('sale_checked_at') or ''):
-                if row['url'] in gathered:
-                    continue
-                if not assess(row):
-                    break
-                successful = True
-                checked_retained += 1
-                if checked_retained % 20 == 0 and not checkpoint():
-                    break
-            if successful or search_errors:
-                checkpoint()
+            remaining = [row for url, row in state['retained'].items() if url not in state['gathered']]
+            check_rows(state, sorted(remaining, key=lambda row:
+                       (row.get('sale_status') == 'rejected', row.get('sale_checked_at') or '')))
+        skipped = sum(len(state['skipped']) for state in states)
+        if skipped:
+            notes.append(f'Sale checks: {skipped} recent unsuccessful candidates skipped during their retry cooldown.')
         if stored:
-            rejected = sum(row['sale_status'] == 'rejected' for row in stored.values())
-            unverified = sum(row['sale_status'] == 'unverified' for row in stored.values())
+            rejected = len({row['url'] for row in stored.values() if row['sale_status'] == 'rejected'})
+            unverified = len({row['url'] for row in stored.values() if row['sale_status'] == 'unverified'})
             notes.append(f'Sale checks: {rejected} rejected; {unverified} unverified.')
-        return queries, sum(row['sale_status'] == 'available' for row in stored.values())
+        return queries, len({row['url'] for row in stored.values() if row['sale_status'] == 'available'})
 
     def _scan_dealers(self, fetcher, errors, notes):
         from .discovery import DEALER_QUERIES, DiscoveryError, discover, discover_web

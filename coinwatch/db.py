@@ -264,7 +264,7 @@ class Database:
                              (per_page, (max(1, page) - 1) * per_page)).fetchall()
         return [dict(row) for row in rows], total
 
-    def record_web_search(self, search_id, results=None, error=None, *, expected_query=None, run_id=None, merge=False):
+    def record_web_search(self, search_id, results=None, error=None, *, expected_query=None, expected_search=None, run_id=None, merge=False):
         now = utcnow()
         # Validate the complete result set before changing the last successful snapshot.
         clean = {}
@@ -304,6 +304,9 @@ class Database:
             search = c.execute('SELECT * FROM wanted_searches WHERE id=?', (search_id,)).fetchone()
             if expected_query is not None and (search is None or not search['include_web'] or
                     with_web_query(dict(search))['web_query'] != expected_query):
+                return False
+            if expected_search is not None and (search is None or
+                    any(search[key] != expected_search.get(key) for key in CRITERIA)):
                 return False
             if search is None:
                 raise ValueError('Wanted search not found')

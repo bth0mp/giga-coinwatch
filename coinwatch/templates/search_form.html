@@ -10,6 +10,7 @@
   <label><span>Currency</span><input name="currency" value="{{ search.currency|default('') }}" maxlength="3" placeholder="e.g. GBP"></label>
   <label><span>Maximum price</span><input type="number" name="max_price" value="{{ search.max_price|default('', true) }}" min="0" step="0.01" placeholder="Any price"></label>
   <p class="form-help wide-field">All entered words must match the seller’s listing title or category. Use double quotes for an exact phrase; any excluded word or phrase removes a match. Mint, ruler and type are search terms, not verified coin attributes. A price limit needs a currency; currencies are not converted.</p>
+  <p class="form-help wide-field">Boeotia spelling variants such as Boiotian and Boetia are recognized as the same term outside quoted phrases. Web results must also match your terms, exclusions, currency and price limit.</p>
   <label class="checkbox-label wide-field"><input type="checkbox" name="enabled" value="true" {% if search.enabled %}checked{% endif %}><span>Include this search in daily coin scans</span></label>
   <label class="checkbox-label wide-field"><input type="checkbox" name="include_web" value="true" {% if search.include_web %}checked{% endif %}><span>Also find coins for sale on the wider web</span></label>
   <p class="form-help wide-field">Automatic web search needs an optional Tavily key in <a href="/settings#web-search">Settings</a>. Web results show individual fixed-price listings with availability checked within 24 hours.</p>

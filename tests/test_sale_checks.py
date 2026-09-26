@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from coinwatch.sale_checks import verify_sale
+from coinwatch.sale_checks import _identity, verify_sale
 from coinwatch.fetch import FetchError
 
 
@@ -121,6 +121,79 @@ def test_blocked_page_is_unverified_without_leaking_error_details():
     assert result['price'] == result['currency'] == ''
 
 
+@pytest.mark.parametrize(('url', 'expected'), [
+    ('https://www.dealer.example:443/product/coin?variant=2&utm_source=search', 'https://dealer.example/product/coin?variant=2'),
+    ('http://www.dealer.example:80/product/coin', 'http://dealer.example/product/coin'),
+    ('https://dealer.example:80/product/coin', 'https://dealer.example:80/product/coin'),
+    ('http://dealer.example:443/product/coin', 'http://dealer.example:443/product/coin'),
+])
+def test_product_identity_normalizes_only_matching_scheme_default_ports(url, expected):
+    assert _identity(url) == expected
+
+
+@pytest.mark.parametrize('different', [
+    'https://dealer.example/product/another-coin',
+    'https://dealer.example/product/athens-owl?variant=2',
+    'http://dealer.example/product/athens-owl',
+    'https://dealer.example:80/product/athens-owl',
+])
+def test_standard_port_identity_does_not_accept_a_different_structured_offer(different):
+    schema = product_schema()
+    schema['offers']['url'] = different
+    result = verify_sale({'url': URL}, Fetcher(product_html(stock='', price='', schema=schema),
+                                              'https://www.dealer.example:443/product/athens-owl'))
+    assert result['sale_status'] == 'unverified'
+
+
+def test_product_identity_rejects_nonstandard_ports():
+    with pytest.raises(FetchError, match='standard web ports'):
+        _identity('https://dealer.example:8443/product/coin')
+
+
+@pytest.mark.parametrize(('message', 'expected'), [
+    ('HTTP 403 fetching dealer.example.', 'Seller denied automated access (HTTP 403); open the listing in your browser.'),
+    ('HTTP 429 fetching dealer.example.', 'Seller rate limit reached (HTTP 429); retry later.'),
+    ('HTTP 404 fetching dealer.example.', 'Seller page was not found (HTTP 404); it may have moved or been removed.'),
+    ('HTTP 503 fetching dealer.example.', 'Seller server error (HTTP 503); retry later.'),
+    ('robots.txt disallows this catalog URL.', 'Seller robots.txt disallows automated checks; open the listing in your browser.'),
+    ('robots.txt could not be checked (HTTP 403).', 'Seller robots.txt could not be verified; retry later.'),
+    ('robots.txt returned an HTML challenge; access is unverified.', 'Seller robots.txt could not be verified; retry later.'),
+    ('Too many robots.txt redirects.', 'Seller robots.txt could not be verified; retry later.'),
+    ('Cannot resolve dealer.example: failure', 'Seller hostname could not be resolved; retry later.'),
+    ('Scan time budget reached; coverage is partial.', 'Web-check time limit reached; increase the time limit or run another scan.'),
+    ('Scan stopped.', 'Sale check was cancelled; run another scan to retry.'),
+    ('The site requires a browser challenge; monitoring is paused for this run.', 'Seller requires a browser challenge; open the listing in your browser.'),
+])
+def test_fetch_failure_reasons_are_actionable_without_echoing_private_details(message, expected):
+    secret = 'https://private.example/page?api_key=tvly-test-secret'
+    result = verify_sale({'url': URL}, Fetcher(error=FetchError(message + ' ' + secret)))
+    assert result['sale_status'] == 'unverified'
+    assert result['sale_reason'] == expected
+    assert 'private.example' not in result['sale_reason'] and 'tvly-test-secret' not in result['sale_reason']
+    assert result['price'] == result['currency'] == ''
+
+
+@pytest.mark.parametrize(('kind', 'expected'), [
+    ('timeout', 'Seller page timed out; retry later.'),
+    ('dns', 'Seller hostname could not be resolved; retry later.'),
+    ('tls', 'Seller TLS connection failed; retry later or check the listing in your browser.'),
+])
+def test_fetch_transport_cause_is_classified_without_exposing_exception_details(kind, expected):
+    import socket
+    import ssl
+    cause = {'timeout': TimeoutError, 'dns': socket.gaierror, 'tls': ssl.SSLError}[kind]('api_key=tvly-private-secret')
+    error = FetchError('Fetch failed for dealer.example: private transport detail')
+    error.__cause__ = cause
+    result = verify_sale({'url': URL}, Fetcher(error=error))
+    assert result['sale_status'] == 'unverified'
+    assert result['sale_reason'] == expected
+
+
+def test_unknown_exception_with_http_text_stays_generic_without_exposing_details():
+    result = verify_sale({'url': URL}, Fetcher(error=RuntimeError('HTTP 403 private api_key=secret')))
+    assert result['sale_reason'] == 'The seller page could not be inspected reliably; availability is unverified.'
+
+
 @pytest.mark.parametrize('url', ['https://en.wikipedia.org/wiki/Ancient_coin', 'https://dealer.example/blog/athens', 'https://dealer.example/auction/123',
                                'https://www.catawiki.com/en/l/123-greek-coin', 'https://www.cointalk.com/threads/123',
                                'https://www.todocoleccion.net/s/monedas-antiguas'])
@@ -184,7 +257,8 @@ def test_price_ranges_do_not_verify_a_single_fixed_price(price):
     assert result['sale_status'] != 'available'
 
 
-def test_goldeneagle_primary_hemidrachm_product_with_payment_method_prices():
+@pytest.mark.parametrize('standard_port_redirect', [False, True])
+def test_goldeneagle_primary_hemidrachm_product_with_payment_method_prices(standard_port_redirect):
     # Minimal sale evidence from the seller HTML, without its marketing description.
     url = 'https://www.goldeneaglecoin.com/item/boetia-ar-hemidrachm-395_340-bc-choice-vf'
     title = 'Boetia AR Hemidrachm 395-340 B.C. Choice VF'
@@ -200,7 +274,8 @@ def test_goldeneagle_primary_hemidrachm_product_with_payment_method_prices():
         <tr><td>Any</td><td>$349.00</td><td>$352.49</td><td>$362.96</td></tr>
       </table><button name="addToCart" type="button" value="47166">Add To Cart</button></div>
     </div></div></main>'''
-    result = verify_sale({'url': url}, Fetcher(html, url))
+    page_url = url.replace('.com/', '.com:443/') if standard_port_redirect else url
+    result = verify_sale({'url': url.replace('www.', '')}, Fetcher(html, page_url))
     assert result['sale_status'] == 'available'
     assert (result['price'], result['currency'], result['title']) == ('349.00', 'USD', title)
     sold = html.replace('1 available', '0 available')

@@ -323,3 +323,117 @@ def test_accumulated_leads_cap_retains_latest_batch(db):
     result = db.search_results(id)['results']
     assert len(result) == 1000
     assert all(r['title'] == 'New' for r in result[:20])
+
+
+@pytest.mark.parametrize('title', [
+    'Boetia AR Hemidrachm 395-340 B.C. Choice VF',
+    'Boetian League Boetia AR Drachm 196-146 B.C. Poseidon & Nike VF',
+    'Grecia Antigua Tebas Boeotia Obolo de plata Escudo / Kantharos (73)',
+])
+def test_boeotian_spelling_equivalents_match_verified_web_and_catalog_titles(title):
+    from coinwatch.searches import matcher, validate_search, web_matcher
+    search = validate_search(dict(keywords='Boiotian, Boetia', category='Greek'))
+    row = dict(title=title, currency='EUR', price='80')
+    assert web_matcher(search)(row)
+    assert matcher(search)(title, 'Greek', 'EUR', '80')
+
+
+@pytest.mark.parametrize('title', [
+    'Antike - Griechische Münzen Pamphylien 465-430 v. Chr. Pamphylia Stater Aspendos VF',
+    'Antike - Griechische Münzen Diobol 400-300 v. Chr. ISTROS Istos Thrakien Moesia VF-',
+    'Antike - Griechische Münzen Drachme Drachm um 480-380 v. Chr Thrakien, Apollonia Pontika VF',
+    'Antike - Griechische Münzen Trihemiobol 400-300 v. Chr. ISTROS Istos Thrakien Moesia VF',
+    'Antike - Griechische Münzen Diobol 525 - 475 v. Chr. IONIA, Ionien, Milet , Miletos EF',
+    'Antike - Griechische Münzen 4 Obole Tetrobol 5. Jh. v.Chr. Mysien Parion VF',
+    'Antike Griechische Münzen Trihemiobol ca. 313-280 v.Chr. Moesia, Istros EF',
+])
+def test_unrelated_verified_greek_sales_cannot_match_boeotia_from_snippet_or_url(title):
+    from coinwatch.searches import validate_search, web_matcher
+    search = validate_search(dict(keywords='Boiotian, Boetia', category='Greek'))
+    assert not web_matcher(search)(dict(title=title, currency='GBP', price='150',
+        snippet='Boiotian Boetia Greek', url='https://dealer.example/boeotia', category='Boeotia Greek'))
+
+
+@pytest.mark.parametrize('spelling', ['Boeotia', 'Boiotia', 'Boetia', 'Boeotian', 'Boiotian', 'Boetian', 'Béotie', 'Beocia', 'Beócia', 'Beozia'])
+def test_boeotia_aliases_keep_other_words_as_required_constraints(spelling):
+    from coinwatch.searches import matcher, validate_search, web_matcher
+    search = validate_search(dict(keywords='Boiotian, Boetia silver', category='Greek'))
+    row = dict(title=f'{spelling} silver hemidrachm', price='100', currency='EUR')
+    assert web_matcher(search)(row)
+    assert matcher(search)(row['title'], 'Greek', 'EUR', '100')
+    assert not web_matcher(search)({**row, 'title': f'{spelling} bronze coin'})
+
+
+def test_unrelated_comma_separated_words_are_still_and_constraints():
+    from coinwatch.searches import matcher, validate_search, web_matcher
+    search = validate_search(dict(keywords='Athens, owl'))
+    assert not matcher(search)('Athens tetradrachm', 'Greek', 'EUR', '100')
+    assert not web_matcher(search)(dict(title='Greek owl tetradrachm', currency='EUR', price='100'))
+    assert web_matcher(search)(dict(title='Athens owl tetradrachm', currency='EUR', price='100'))
+
+
+@pytest.mark.parametrize('keywords', ['"Boetia"', '"Boetia AR"'])
+def test_quoted_boeotia_words_and_phrases_remain_literal(keywords):
+    from coinwatch.searches import matcher, validate_search, web_matcher
+    search = validate_search(dict(keywords=keywords))
+    assert web_matcher(search)(dict(title='Boetia AR hemidrachm', currency='EUR', price='100'))
+    assert not web_matcher(search)(dict(title='Boeotia AR hemidrachm', currency='EUR', price='100'))
+    assert not matcher(search)('Boeotia AR hemidrachm', 'Greek', 'EUR', '100')
+
+
+@pytest.mark.parametrize('title', ['Greek Athens owl', 'Griechische Münze Athens owl', 'Monnaie grecque Athens owl', 'Moneda griega Athens owl'])
+def test_web_greek_category_needs_seller_title_evidence(title):
+    from coinwatch.searches import validate_search, web_matcher
+    matches = web_matcher(validate_search(dict(keywords='owl', category='Greek')))
+    assert matches(dict(title=title, currency='EUR', price='100'))
+    assert not matches(dict(title='Roman owl coin', currency='EUR', price='100', snippet='Greek', category='Greek'))
+
+
+def test_web_matching_keeps_type_mint_ruler_exclusions_currency_and_ceiling():
+    from coinwatch.searches import validate_search, web_matcher
+    search = validate_search(dict(keywords='silver', coin_type='denarius', mint='Rome', ruler='Hadrian',
+                                  exclude_terms='plated', category='Roman', currency='GBP', max_price='50'))
+    matches = web_matcher(search)
+    row = dict(title='Roman Hadrian silver denarius Rome', currency='GBP', price='49')
+    assert matches(row)
+    for value in ('silver', 'denarius', 'Rome', 'Hadrian', 'Roman'):
+        assert not matches({**row, 'title': row['title'].replace(value, '')})
+    assert not matches({**row, 'title': row['title'] + ' plated'})
+    assert not matches({**row, 'currency': 'EUR'})
+    for price in ('51', 'NaN', ''):
+        assert not matches({**row, 'price': price})
+
+
+def test_boeotia_exclusion_uses_equivalents_but_quoted_exclusions_stay_literal():
+    from coinwatch.searches import validate_search, web_matcher
+    row = dict(title='Greek Boeotia silver coin', currency='EUR', price='100')
+    assert not web_matcher(validate_search(dict(keywords='silver', exclude_terms='Boetia')))(row)
+    assert web_matcher(validate_search(dict(keywords='silver', exclude_terms='"Boetia"')))(row)
+
+
+def test_broad_queries_target_boeotia_spellings_and_purchase_intent_without_generic_catalogues(db):
+    from coinwatch.searches import web_query_variants
+    search = db.get_search(db.save_search(dict(keywords='Boiotian, Boetia "silver owl"', category='Greek',
+                                               exclude_terms='plated "modern copy"')))
+    queries = web_query_variants(search, 50)
+    assert len(queries) == len(set(queries)) == 50
+    assert queries[0] == search['web_query']
+    assert any('"Boeotia"' in query for query in queries[1:])
+    assert any('"Boiotia"' in query for query in queries[1:])
+    assert all('"silver owl"' in query and 'Greek' in query and '-plated' in query and '-"modern copy"' in query for query in queries)
+    assert not any(any(word in query.casefold() for word in ('catalogue', 'numismatics', 'monedas antiguas', 'moedas antigas')) for query in queries)
+
+
+def test_broad_queries_do_not_rewrite_quoted_spelling_constraints(db):
+    from coinwatch.searches import web_query_variants
+    search = db.get_search(db.save_search(dict(keywords='"Boetia AR"')))
+    assert all('"Boetia AR"' in query for query in web_query_variants(search, 50))
+
+
+def test_daily_web_query_anchors_boeotia_without_dropping_other_terms_or_exclusions(db):
+    from coinwatch.searches import web_query_variants
+    search = db.get_search(db.save_search(dict(keywords='Boiotian, Boetia "silver owl"', category='Greek', exclude_terms='plated')))
+    assert search['web_query'] == '"Boeotia" "silver owl" Greek ancient coins buy fixed price -plated'
+    assert web_query_variants(search, 1) == [search['web_query']]
+    literal = db.get_search(db.save_search(dict(keywords='"Boetia AR"', category='Greek')))
+    assert literal['web_query'] == '"Boetia AR" Greek ancient coins buy fixed price'

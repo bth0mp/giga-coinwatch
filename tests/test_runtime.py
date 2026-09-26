@@ -446,7 +446,7 @@ def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(
         entered.set()
         if not release.wait(5):
             raise TimeoutError('Test did not release search')
-        return [dict(url='https://example.com/owl', title='Greek owl coin', snippet='Potential match')]
+        return [dict(url='https://example.com/owl', title='Greek Athens owl coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     runtime = Runtime(db)
     try:
@@ -466,7 +466,7 @@ def test_runtime_tracks_selected_watch_without_exposing_web_results_in_snapshot(
     assert runtime.snapshot()['search_id'] is None
     assert runtime.snapshot()['web_queries'] == 0
     assert runtime.snapshot()['web_minutes'] == 0
-    assert runtime.search_results(watch)['results'][0]['title'] == 'Greek owl coin'
+    assert runtime.search_results(watch)['results'][0]['title'] == 'Greek Athens owl coin'
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
     assert runtime.search_results(watch)['status'] == 'complete'
 
@@ -525,7 +525,7 @@ def test_lost_scan_lease_discards_late_web_response_and_stops_later_queries(tmp_
         db.finish_run(db.runs()[0]['id'], 'interrupted', 'Application stopped')
         if provider_error:
             raise WebSearchError('Provider unavailable')
-        return [dict(url='https://example.com/coin', title='Coin', snippet='Potential match')]
+        return [dict(url='https://example.com/coin', title='Athens coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db).run(mode='coins')
     assert result['status'] == 'interrupted'
@@ -542,7 +542,7 @@ def test_stop_during_web_request_does_not_store_late_response(tmp_path, monkeypa
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
     def search(query, key, **kwargs):
         stop.set()
-        return [dict(url='https://example.com/coin', title='Coin', snippet='Potential match')]
+        return [dict(url='https://example.com/coin', title='Athens coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db, stop_event=stop).run(mode='coins')
     assert result['status'] == 'interrupted'
@@ -625,7 +625,7 @@ def test_selected_web_minutes_control_paid_queries_and_preserve_checked_sales(tm
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
     def search(query, key, **kwargs):
         queries.append(query)
-        return [dict(url=f'https://dealer.example/{len(queries)}', title='Greek coin')]
+        return [dict(url=f'https://dealer.example/{len(queries)}', title='Greek Athens coin')]
     def verify(row, fetcher):
         clock[0] += seconds_per_sale
         return sale_result(row)
@@ -649,7 +649,7 @@ def test_scheduled_web_phase_keeps_ten_minutes_and_independent_catalog_dealer_bu
     monkeypatch.setattr('coinwatch.scanner.Fetcher', lambda stop_event, budget=900:
                         SimpleNamespace(deadline=clock[0] + budget, stop_event=stop_event))
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
-    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [dict(url='https://dealer.example/coin', title='Greek coin')])
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [dict(url='https://dealer.example/coin', title='Greek Athens coin')])
     def scrape(source, fetcher):
         phase_budgets['catalog'] = fetcher.deadline - clock[0]
         clock[0] += 800
@@ -672,15 +672,15 @@ def test_broad_scan_uses_distinct_queries_deduplicates_and_preserves_earlier_lea
     db = Database(tmp_path/'catalog.db')
     db.initialize([])
     watch = wanted_search(db)
-    db.record_web_search(watch, [dict(url='https://old.example/coin', title='Earlier coin', snippet='Earlier lead')])
+    db.record_web_search(watch, [dict(url='https://old.example/coin', title='Earlier Athens coin', snippet='Earlier lead')])
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
     queries = []
     def search(query, key, **options):
         queries.append(query)
         assert options['max_results'] == 20
         assert not options.get('exclude_domains')
-        return [dict(url='https://new.example/shared', title='Shared coin', snippet='Potential match'),
-                dict(url=f'https://new.example/coin-{len(queries)}', title='Another coin', snippet='Potential match')]
+        return [dict(url='https://new.example/shared', title='Shared Athens coin', snippet='Potential match'),
+                dict(url=f'https://new.example/coin-{len(queries)}', title='Another Athens coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db).run(mode='coins', search_id=watch, web_queries=3)
     assert result['status'] == 'complete'
@@ -695,7 +695,7 @@ def test_broad_scan_uses_distinct_queries_deduplicates_and_preserves_earlier_lea
     assert len(db.search_results(watch)['results']) == 5
 
 
-def test_broad_scan_diversifies_after_five_requests_using_only_returned_hosts(tmp_path, monkeypatch):
+def test_broad_scan_keeps_good_dealers_eligible_after_five_requests(tmp_path, monkeypatch):
     db = Database(tmp_path/'catalog.db')
     db.initialize([dict(id='known', name='Known', url='https://registered.example', adapter='test', enabled=False)])
     watch = wanted_search(db)
@@ -703,13 +703,11 @@ def test_broad_scan_diversifies_after_five_requests_using_only_returned_hosts(tm
     requests = []
     def search(query, key, **options):
         requests.append(options)
-        return [dict(url=f'https://dealer{len(requests)}.example/coin', title='Coin', snippet='Potential match')]
+        return [dict(url=f'https://dealer{len(requests)}.example/coin', title='Athens coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db).run(mode='coins', search_id=watch, web_queries=7)
     assert result['web_queries'] == 7
-    assert all(not call.get('exclude_domains') for call in requests[:5])
-    assert set(requests[5]['exclude_domains']) == {f'dealer{i}.example' for i in range(1, 6)}
-    assert 'registered.example' not in requests[6]['exclude_domains']
+    assert all(not call.get('exclude_domains') for call in requests)
     assert len(db.search_results(watch)['results']) == 7
 
 
@@ -724,7 +722,7 @@ def test_broad_scan_keeps_partial_results_and_stops_on_provider_error(tmp_path, 
         attempts.append(query)
         if len(attempts) == 2:
             raise WebSearchError('The Tavily plan usage limit has been reached.')
-        return [dict(url='https://dealer.example/coin', title='Coin', snippet='Potential match')]
+        return [dict(url='https://dealer.example/coin', title='Athens coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db).run(mode='coins', search_id=watch, web_queries=10)
     assert result['status'] == 'partial'
@@ -745,7 +743,7 @@ def test_broad_scan_checks_for_edits_between_requests(tmp_path, monkeypatch):
         attempted.append(query)
         if len(attempted) == 2:
             db.save_search(dict(db.get_search(watch), keywords='Alexandria'), search_id=watch)
-        return [dict(url=f'https://dealer.example/coin-{len(attempted)}', title='Coin', snippet='Potential match')]
+        return [dict(url=f'https://dealer.example/coin-{len(attempted)}', title='Athens coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db).run(mode='coins', search_id=watch, web_queries=5)
     assert result['status'] == 'complete'
@@ -765,7 +763,7 @@ def test_broad_scan_keeps_completed_queries_when_later_request_is_cancelled(tmp_
         attempted.append(query)
         if len(attempted) == 2:
             stop.set()
-        return [dict(url=f'https://dealer.example/coin-{len(attempted)}', title='Coin', snippet='Potential match')]
+        return [dict(url=f'https://dealer.example/coin-{len(attempted)}', title='Athens coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db, stop_event=stop).run(mode='coins', search_id=watch, web_queries=5)
     assert result['status'] == 'interrupted'
@@ -774,7 +772,7 @@ def test_broad_scan_keeps_completed_queries_when_later_request_is_cancelled(tmp_
     assert [row['url'] for row in stored] == ['https://dealer.example/coin-1']
 
 
-def test_broad_scan_accepts_fifty_queries_and_caps_domain_exclusions(tmp_path, monkeypatch):
+def test_broad_scan_accepts_fifty_queries_without_excluding_previous_dealers(tmp_path, monkeypatch):
     db = Database(tmp_path/'catalog.db')
     db.initialize([])
     watch = wanted_search(db)
@@ -782,15 +780,14 @@ def test_broad_scan_accepts_fifty_queries_and_caps_domain_exclusions(tmp_path, m
     requests = []
     def search(query, key, **options):
         requests.append(options)
-        return [dict(url=f'https://dealer{len(requests)}-{i}.example/coin', title='Coin', snippet='Potential match') for i in range(20)]
+        return [dict(url=f'https://dealer{len(requests)}-{i}.example/coin', title='Athens coin', snippet='Potential match') for i in range(20)]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db).run(mode='coins', search_id=watch, web_queries=50)
     assert result['status'] == 'complete'
     assert result['web_queries'] == len(requests) == 50
     assert result['web_leads'] == 1000
     assert len(db.search_results(watch)['results']) == 1000
-    assert all(len(request.get('exclude_domains', [])) <= 150 for request in requests)
-    assert len(requests[-1]['exclude_domains']) == 150
+    assert all(not request.get('exclude_domains') for request in requests)
 
 
 def test_broad_scan_isolates_unexpected_query_errors_without_losing_successes(tmp_path, monkeypatch):
@@ -803,7 +800,7 @@ def test_broad_scan_isolates_unexpected_query_errors_without_losing_successes(tm
         requests.append(query)
         if len(requests) == 2:
             raise RuntimeError('Internal details: ' + key)
-        return [dict(url=f'https://dealer.example/coin-{len(requests)}', title='Coin', snippet='Potential match')]
+        return [dict(url=f'https://dealer.example/coin-{len(requests)}', title='Athens coin', snippet='Potential match')]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     result = Scanner(db).run(mode='coins', search_id=watch, web_queries=3)
     assert result['status'] == 'partial'
@@ -824,12 +821,12 @@ def test_web_scan_stores_assessments_but_counts_only_available_fixed_price_sales
             for kind in ('coin', 'sold', 'article', 'unclear')]
     monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: rows)
     statuses = {'coin':'available', 'sold':'rejected', 'article':'rejected', 'unclear':'unverified'}
-    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', lambda row, fetcher: sale_result(row, statuses[row['title']]))
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', lambda row, fetcher: sale_result(dict(row, title='Athens coin'), statuses[row['title']]))
     result = Scanner(db).run(mode='coins', search_id=watch)
     assert result['status'] == 'complete'
     assert result['web_leads'] == 1
     assert len(db.search_results(watch)['results']) == 4
-    assert [r['title'] for r in db.search_results(watch, verified_only=True)['results']] == ['coin']
+    assert [r['title'] for r in db.search_results(watch, verified_only=True)['results']] == ['Athens coin']
     assert '2 rejected' in result['summary']
     assert '1 unverified' in result['summary']
     assert 'https://dealer.example/' not in result['summary']
@@ -839,7 +836,7 @@ def test_web_scan_rechecks_retained_sales_oldest_first_and_hides_newly_sold_coin
     db = Database(tmp_path/'catalog.db')
     db.initialize([])
     watch = wanted_search(db)
-    old = [dict(sale_result(dict(url=f'https://dealer.example/{i}', title=f'Coin {i}', snippet='Earlier lead')),
+    old = [dict(sale_result(dict(url=f'https://dealer.example/{i}', title=f'Athens coin {i}', snippet='Earlier lead')),
                 sale_checked_at=f'2026-09-{i:02d}T10:00:00+00:00') for i in (3, 1, 2)]
     db.record_web_search(watch, old)
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
@@ -860,7 +857,7 @@ def test_retained_sales_can_be_rechecked_without_a_search_api_key(tmp_path, monk
     db = Database(tmp_path/'catalog.db')
     db.initialize([])
     watch = wanted_search(db)
-    db.record_web_search(watch, [dict(url='https://dealer.example/coin', title='Coin', snippet='Earlier lead')])
+    db.record_web_search(watch, [dict(url='https://dealer.example/coin', title='Athens coin', snippet='Earlier lead')])
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
     def forbidden_api(*args, **kwargs):
         raise AssertionError('A missing API key must not trigger a paid query')
@@ -875,7 +872,7 @@ def test_sale_verification_cache_is_shared_between_queries_and_watches(tmp_path,
     db = Database(tmp_path/'catalog.db')
     db.initialize([])
     watches = [wanted_search(db, name=name) for name in ('Watch A', 'Watch B')]
-    row = dict(url='https://dealer.example/coin', title='Coin', snippet='Search lead')
+    row = dict(url='https://dealer.example/coin', title='Athens coin', snippet='Search lead')
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
     monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [row])
     checked = []
@@ -888,6 +885,150 @@ def test_sale_verification_cache_is_shared_between_queries_and_watches(tmp_path,
     assert all(db.search_results(watch, verified_only=True)['results'] for watch in watches)
 
 
+def test_available_coins_across_watches_are_checked_before_new_queries_and_budget_keeps_unreached_rows(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watches = [wanted_search(db, name=f'Watch {i}') for i in range(3)]
+    old = '2026-01-01T00:00:00+00:00'
+    for watch in watches:
+        row = dict(sale_result(dict(url=f'https://dealer.example/{watch}', title='Athens tetradrachm')), sale_checked_at=old)
+        db.record_web_search(watch, [row])
+    original_unreached = db.search_results(watches[2])
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    queries, checked = [], []
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: queries.append(args) or [])
+    def verify(row, fetcher):
+        checked.append(row['url'])
+        if len(checked) == 2:
+            fetcher.deadline = 0
+        return sale_result(row)
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    result = Scanner(db).run(mode='coins')
+    assert result['status'] == 'partial' and result['web_leads'] == 2
+    assert queries == []
+    assert checked == [f'https://dealer.example/{watch}' for watch in watches[:2]]
+    assert db.search_results(watches[2]) == original_unreached
+    assert db.search_results(watches[1])['status'] == 'partial'
+
+
+@pytest.mark.parametrize('status,age_hours,reason', [
+    ('unverified', 12, 'The seller page could not be inspected reliably; availability is unverified.'),
+    ('unverified', 12, 'Seller access was blocked (HTTP 403); availability is unverified.'),
+    ('rejected', 24 * 6, 'The seller marks this item sold.'),
+])
+def test_recent_failed_or_rejected_rediscovered_links_skip_fetch_without_refresh(tmp_path, monkeypatch, status, age_hours, reason):
+    from datetime import timedelta
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    row = dict(sale_result(dict(url='https://dealer.example/old', title='Athens coin'), status),
+               sale_checked_at=(datetime.now(timezone.utc)-timedelta(hours=age_hours)).isoformat(), sale_reason=reason)
+    db.record_web_search(watch, [row])
+    original = db.search_results(watch)['results']
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [dict(url=row['url'], title='New snippet title')])
+    checked = []
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', lambda row, fetcher: checked.append(row) or sale_result(row))
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=3)
+    assert checked == [] and result['web_leads'] == 0
+    assert db.search_results(watch)['results'] == original
+    assert 'cooldown' in result['summary'].lower()
+
+
+def test_cooldown_only_scan_preserves_prior_provider_error_and_status(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    db.record_web_search(watch, [sale_result(dict(url='https://dealer.example/old', title='Athens coin'), 'unverified')], 'Provider failed')
+    original = db.search_results(watch)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', lambda *args: pytest.fail('Cooled row fetched'))
+    assert Scanner(db).run(mode='coins')['status'] == 'complete'
+    assert db.search_results(watch) == original
+
+
+@pytest.mark.parametrize('reason', ['Web-check time limit reached; page inspection was unfinished.',
+                                  'Sale check was cancelled; page inspection was unfinished.'])
+def test_next_manual_scan_immediately_retries_unfinished_sale_checks(tmp_path, monkeypatch, reason):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    row = dict(sale_result(dict(url='https://dealer.example/unfinished', title='Athens coin'), 'unverified'),
+               sale_reason=reason)
+    db.record_web_search(watch, [row])
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
+    checked = []
+    def verify(row, fetcher):
+        checked.append(row['url'])
+        return sale_result(row)
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_minutes=30)
+    assert checked == [row['url']]
+    assert result['status'] == 'complete' and result['web_leads'] == 1
+    assert db.search_results(watch, verified_only=True)['results'][0]['url'] == row['url']
+
+
+def test_retryable_unverified_candidates_precede_older_rejected_candidates(tmp_path, monkeypatch):
+    from datetime import timedelta
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db)
+    rows = [dict(sale_result(dict(url=f'https://dealer.example/{state}', title='Athens coin'), state),
+                 sale_checked_at=(datetime.now(timezone.utc)-timedelta(days=days)).isoformat())
+            for state, days in [('rejected', 20), ('unverified', 2)]]
+    db.record_web_search(watch, rows)
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: '')
+    checked = []
+    def verify(row, fetcher):
+        checked.append(row['sale_status'])
+        return sale_result(row)
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    Scanner(db).run(mode='coins')
+    assert checked == ['unverified', 'rejected']
+
+
+def test_seller_relevance_is_applied_per_watch_without_mutating_shared_sale_cache(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    wrong = wanted_search(db, keywords='Corinth')
+    right = wanted_search(db, keywords='Athens', currency='GBP', max_price='60')
+    expensive = wanted_search(db, keywords='Athens', currency='GBP', max_price='40')
+    excluded = wanted_search(db, keywords='Athens', exclude_terms='plated')
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs:
+                        [dict(url='https://dealer.example/shared', title='Corinth stater', snippet='Corinth stater in stock')])
+    checked = []
+    def verify(row, fetcher):
+        checked.append(row['url'])
+        return sale_result(dict(row, title='Athens plated tetradrachm'))
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    result = Scanner(db).run(mode='coins')
+    assert checked == ['https://dealer.example/shared']
+    assert result['web_leads'] == 1
+    assert db.search_results(right, verified_only=True)['results'][0]['price'] == '50.00'
+    for watch in (wrong, expensive, excluded):
+        rows = db.search_results(watch)['results']
+        assert rows[0]['sale_status'] == 'rejected'
+        assert 'criteria' in rows[0]['sale_reason']
+        assert not rows[0]['price'] and not rows[0]['currency']
+
+
+def test_currency_criteria_edit_during_sale_check_cannot_restore_old_results(tmp_path, monkeypatch):
+    db = Database(tmp_path/'catalog.db')
+    db.initialize([])
+    watch = wanted_search(db, currency='GBP')
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs:
+                        [dict(url='https://dealer.example/coin', title='Athens coin')])
+    def verify(row, fetcher):
+        db.save_search(dict(db.get_search(watch), currency='EUR'), search_id=watch)
+        return sale_result(row)
+    monkeypatch.setattr('coinwatch.sale_checks.verify_sale', verify)
+    Scanner(db).run(mode='coins')
+    assert db.search_results(watch)['results'] == []
+    assert db.search_results(watch)['status'] == 'idle'
+
+
 @pytest.mark.parametrize('query_limit,rows_per_query', [(5, 2), (1, 1)])
 def test_sale_verification_budget_stops_later_paid_queries_and_keeps_checked_progress(tmp_path, monkeypatch, query_limit, rows_per_query):
     db = Database(tmp_path/'catalog.db')
@@ -897,7 +1038,7 @@ def test_sale_verification_budget_stops_later_paid_queries_and_keeps_checked_pro
     paid = []
     def search(query, key, **kwargs):
         paid.append(query)
-        return [dict(url=f'https://dealer.example/{i}', title=f'Coin {i}', snippet='Search lead') for i in range(rows_per_query)]
+        return [dict(url=f'https://dealer.example/{i}', title=f'Athens coin {i}', snippet='Search lead') for i in range(rows_per_query)]
     monkeypatch.setattr('coinwatch.web_search.search_web', search)
     def verify(row, fetcher):
         fetcher.deadline = 0
@@ -919,7 +1060,7 @@ def test_sale_checks_revalidate_scan_and_watch_before_more_pages_or_writes(tmp_p
     stop = threading.Event()
     monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-secret')
     monkeypatch.setattr('coinwatch.web_search.search_web', lambda *args, **kwargs: [
-        dict(url=f'https://dealer.example/{i}', title=f'Coin {i}', snippet='Search lead') for i in (1, 2)])
+        dict(url=f'https://dealer.example/{i}', title=f'Athens coin {i}', snippet='Search lead') for i in (1, 2)])
     checked = []
     def verify(row, fetcher):
         checked.append(row['url'])

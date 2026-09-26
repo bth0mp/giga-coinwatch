@@ -1,6 +1,7 @@
 """One process scheduler, with durable per-day occurrence bookkeeping."""
 import logging
 import threading
+from collections import Counter
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -60,10 +61,32 @@ class Runtime:
 
     def search_results(self, search_id):
         from .sale_checks import individual_ancient_coin_title
+        from .searches import web_matcher
         from .web_search import WebSearchError, load_api_key
         search = self.db.get_search(search_id)
+        matches = web_matcher(search)
         result = self.db.search_results(search_id, verified_only=True)
-        result['results'] = [row for row in result['results'] if individual_ancient_coin_title(row['title'])]
+        result['results'] = [row for row in result['results']
+                             if individual_ancient_coin_title(row['title']) and matches(row)]
+        visible_urls = {row['url'] for row in result['results']}
+        retained = self.db.search_results(search_id)['results']
+        reasons = Counter()
+        for row in retained:
+            if row['url'] in visible_urls:
+                continue
+            if row['sale_status'] == 'available':
+                if not individual_ancient_coin_title(row['title']):
+                    status, reason = 'Rejected', 'The primary item is not a supported individual ancient coin.'
+                elif not matches(row):
+                    status, reason = 'Not matching', 'The listing does not match this saved search.'
+                else:
+                    status, reason = 'Expired', 'Availability needs a new check.'
+            else:
+                status, reason = row['sale_status'].capitalize(), row['sale_reason'] or 'No completed sale check yet.'
+            reasons[status, reason] += 1
+        result['candidate_count'] = len(retained)
+        result['check_summary'] = [dict(status=status, reason=reason, count=count)
+                                   for (status, reason), count in reasons.most_common()]
         if search['include_web']:
             try:
                 api_key = load_api_key(self.db.path.parent)
