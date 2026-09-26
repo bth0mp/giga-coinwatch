@@ -291,6 +291,18 @@ def _page_count(soup, adapter: str) -> int:
 def scrape_source(source: dict, fetcher) -> ScrapeResult:
     """Return parsed catalog rows; never mark a truncated or failed sweep complete."""
     adapter = source.get("adapter", "")
+    if adapter == 'numidas':
+        from .numidas import scrape_numidas
+        return scrape_numidas(source, fetcher)
+    if adapter in {'minotaur', 'shopify'}:
+        from .modern_sources import scrape_modern
+        return scrape_modern(source, fetcher)
+    if adapter in {'ancient-coin-traders', 'gascogne'}:
+        from .classic_sources import scrape_classic
+        return scrape_classic(source, fetcher)
+    if adapter == 'woocommerce':
+        from .woocommerce import scrape_woocommerce
+        return scrape_woocommerce(source, fetcher)
     if adapter not in _ADAPTERS:
         return ScrapeResult(complete=False, error=f"unsupported adapter: {adapter or 'none'}")
     selector, parser = _ADAPTERS[adapter]

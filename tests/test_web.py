@@ -115,6 +115,20 @@ def test_unsupported_added_source_cannot_be_enabled(tmp_path):
     assert f'/sources/{source["id"]}/enabled' not in client.get("/sources").text
 
 
+def test_source_status_filter_explains_unsupported_without_fake_baseline(tmp_path):
+    client, db, _ = setup_catalog(tmp_path)
+    db.initialize([dict(id='blocked', name='Blocked shop', url='https://blocked.example',
+                        adapter='', enabled=False, support_status='access_blocked',
+                        support_checked='2026-09-26', note='HTTP 403 from the public catalog.')])
+    page = client.get('/sources?status=access_blocked').text
+    assert 'Blocked shop' in page and 'Access blocked' in page
+    assert 'HTTP 403 from the public catalog.' in page and '2026-09-26' in page
+    assert 'Test &amp; &lt;dealer&gt;' not in page
+    assert 'Monitoring support pending' not in page and 'Baseline pending' not in page
+    assert '/sources/blocked/enabled' not in page
+    assert '1 of 2 sources' in page and 'Not monitored' in page
+
+
 def test_private_source_url_returns_client_error(tmp_path):
     client, db, _ = setup_catalog(tmp_path)
     response = client.post("/sources/add", data={**token(db), "url": "http://127.0.0.1/coins"})

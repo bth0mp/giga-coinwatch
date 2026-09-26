@@ -43,6 +43,34 @@ def test_product_identity_survives_url_and_price_change_and_missing_page(tmp_pat
     assert db.get_source('shop')['last_error'] == 'blocked'
 
 
+def test_complete_catalog_hides_removed_coins_but_partial_does_not(tmp_path):
+    db = make_db(tmp_path)
+    s = db.get_source('shop')
+    run = db.claim_run('manual')
+    db.record_source_result(run, s, [coin('one'), coin('two')], True, 1, None)
+    db.record_source_result(run, s, [coin('one')], False, 1, 'page failed')
+    assert all(x['availability'] == 'available' for x in db.list_listings(view='all')[0])
+    db.record_source_result(run, s, [coin('one')], True, 1, None)
+    rows = {x['external_id']: x for x in db.list_listings(view='all')[0]}
+    assert rows['one']['availability'] == 'available'
+    assert rows['two']['availability'] == 'unavailable'
+    db.record_source_result(run, s, [coin('one'), coin('two')], True, 1, None)
+    assert all(x['availability'] == 'available' for x in db.list_listings(view='all')[0])
+    assert db.list_listings(view='new')[1] == 0
+
+
+def test_source_results_from_previous_scope_cannot_establish_new_baseline(tmp_path):
+    import pytest
+    db = make_db(tmp_path)
+    old = db.get_source('shop')
+    run = db.claim_run('manual')
+    db.initialize([dict(id='shop', name='Shop', url='https://example.com/greek', adapter='test')])
+    with pytest.raises(ValueError, match='scope changed'):
+        db.record_source_result(run, old, [coin()], True, 1, None)
+    assert not db.get_source('shop')['baseline_complete']
+    assert not db.list_listings(view='all')[1]
+
+
 def test_run_lease_excludes_overlap_and_can_expire(tmp_path):
     db = make_db(tmp_path)
     first = db.claim_run('manual')

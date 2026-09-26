@@ -1,21 +1,23 @@
 {% extends "base.html" %}
 {% block title %}Sources{% endblock %}
 {% block content %}
-<div class="page-heading"><div><h1>Sources</h1><p>Dealers in your registry and the state of their latest scan.</p></div><div class="count-strip"><span><strong>{{ stats.active_sources }}</strong> active</span></div></div>
+<div class="page-heading"><div><h1>Sources</h1><p>Active sources are checked for available fixed-price coins. Each dealer below shows its monitoring coverage or the reason it cannot be monitored yet.</p></div><div class="count-strip"><span><strong>{{ stats.active_sources }}</strong> active</span></div></div>
 <section class="panel add-source">
   <div><h2>Add a dealer</h2><p>A dealer enters the registry first. Monitoring begins when support for that dealer is ready and you enable it.</p></div>
   <form method="post" action="/sources/add" class="inline-form"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><label><span>Website URL</span><input type="url" name="url" required placeholder="https://dealer.example"></label><label><span>Name (optional)</span><input type="text" name="name" placeholder="Dealer name"></label><button class="button button-primary" type="submit">Add source</button></form>
 </section>
-<div class="section-heading"><h2>Registry</h2><p>{{ sources|length }} {{ 'source' if sources|length == 1 else 'sources' }}</p></div>
+<div class="section-heading"><h2>Registry</h2><p>{{ sources|length }} of {{ source_total }} sources</p></div>
+<form method="get" action="/sources" class="inline-form"><label><span>Monitoring status</span><select name="status"><option value="">All sources ({{ source_total }})</option>{% for group in support_counts %}<option value="{{ group.key }}" {% if selected_status == group.key %}selected{% endif %}>{{ group.label }} ({{ group.count }})</option>{% endfor %}</select></label><button class="button button-secondary" type="submit">Filter</button></form>
 {% if sources %}<div class="source-list">{% for source in sources %}
   <article class="source-row">
-    <div class="source-main"><div class="source-title"><h3>{{ source.name }}</h3><span class="pill {{ 'pill-active' if source.enabled else '' }}">{{ 'Active' if source.enabled else ('Paused' if source.adapter else 'Needs setup') }}</span></div>
+    <div class="source-main"><div class="source-title"><h3>{{ source.name }}</h3><span class="pill {{ 'pill-active' if source.enabled else '' }}">{{ source.support.label }}</span></div>
       {% if source.url|safe_url %}<a class="source-url" href="{{ source.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ source.url }}</a>{% endif %}
       {% if source.note %}<p class="muted">{{ source.note }}</p>{% endif %}
+      {% if source.support_checked %}<p class="muted">Support checked: {{ source.support_checked }}</p>{% endif %}
       {% if source.last_error %}<p class="source-error">Last issue: {{ source.last_error }}</p>{% endif %}
     </div>
-    <div class="source-meta"><span>{{ 'Baseline complete' if source.baseline_complete else 'Baseline pending' }}</span><span>{{ source.last_count or 0 }} observed · {{ source.last_pages or 0 }} {{ 'page' if source.last_pages == 1 else 'pages' }} checked</span><span>Last attempt: {{ source.last_attempt|local_time(settings.timezone) }}</span><span>Last success: {{ source.last_success|local_time(settings.timezone) }}</span></div>
-    {% if source.enabled or source.adapter %}<form method="post" action="/sources/{{ source.id }}/enabled"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ 'false' if source.enabled else 'true' }}"><button class="button button-secondary" type="submit">{{ 'Pause' if source.enabled else 'Enable' }}</button></form>{% else %}<span class="muted">Monitoring support pending</span>{% endif %}
+    {% if source.adapter %}<div class="source-meta"><span>{{ 'Baseline complete' if source.baseline_complete else 'First complete scan needed' }}</span><span>{{ source.last_count or 0 }} observed · {{ source.last_pages or 0 }} {{ 'page' if source.last_pages == 1 else 'pages' }} checked</span><span>Last attempt: {{ source.last_attempt|local_time(settings.timezone) }}</span><span>Last success: {{ source.last_success|local_time(settings.timezone) }}</span></div>{% endif %}
+    {% if source.adapter %}<form method="post" action="/sources/{{ source.id }}/enabled"><input type="hidden" name="csrf_token" value="{{ csrf_token }}"><input type="hidden" name="enabled" value="{{ 'false' if source.enabled else 'true' }}"><button class="button button-secondary" type="submit">{{ 'Pause' if source.enabled else 'Enable' }}</button></form>{% else %}<span class="muted">Not monitored</span>{% endif %}
   </article>
-{% endfor %}</div>{% else %}<div class="empty-state"><h2>No sources yet</h2><p>Add a dealer URL above to keep track of it.</p></div>{% endif %}
+{% endfor %}</div>{% else %}<div class="empty-state"><h2>No sources in this view</h2><p>Choose another status or add a dealer URL above.</p></div>{% endif %}
 {% endblock %}

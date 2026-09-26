@@ -1,6 +1,33 @@
-# Source validation (25 September 2026)
+# Source validation (updated 26 September 2026)
 
-giga-coinwatch reads public fixed-price category pages at low frequency. An enabled source covers its configured category, not the dealer's entire catalog. A page or product parse failure makes the source scan incomplete; incomplete results cannot establish or replace a baseline. Explicit sold/reserved product cards are retained with that status so an existing listing can be updated, while generic lots, replicas, auctions and modern stock are excluded. Pages linked from a category are bounded to 20; reaching that cap reports incomplete.
+giga-coinwatch reads public fixed-price category pages at low frequency. An enabled source covers its configured category, not the dealer's entire catalog. A page or product parse failure makes the source scan incomplete; incomplete results cannot establish or replace a baseline. Explicit sold/reserved product cards are retained with that status so an existing listing can be updated, while generic lots, replicas, auctions and modern stock are excluded. Most adapters are bounded to 20 catalog pages; the newly audited WooCommerce categories allow 50. Reaching a cap reports incomplete. Complete scans mark missing formerly available coins unavailable; partial scans preserve them.
+
+## Newly supported scopes, 26 September
+
+All ten scopes below passed a complete live check through the app's public Fetcher, without Tavily, login, cart submission or bypassing access restrictions. Counts are observations from that check and will change with stock. Results include explicit sold/reserved records; only available records match wanted searches. The first complete scan establishes existing stock rather than advertising it as newly listed.
+
+| Dealer / scope | Catalog pages | Parsed listings | Available | Currency |
+| --- | ---: | ---: | ---: | --- |
+| [Bargain Bin Ancients, Greek](https://bargainbinancients.com/product-category/greek-coins/) | 33 | 295 | 257 | USD |
+| [Pashiz, Greek](https://www.pashizcoins.com/product-category/greek/) | 6 | 67 | 67 | GBP |
+| [Praefectus, Showcase coins](https://praefectuscoins.com/product-category/showcase/) | 30 | 621 | 621 | USD |
+| [Vilmar, Ancient Coins](https://vilmarnumismatics.com/product-category/ancient-coins/) | 10 | 113 | 102 | USD |
+| [Bactrianumis, Oriental Greek](https://bactrianumis.com/product-category/oriental-greek-coins/) | 1 | 28 | 28 | USD |
+| [Ancient Coin Traders, Greek](https://www.ancientcointraders.com/greek-c-22.html) | 18 | 348 | 110 | AUD |
+| [Gascogne Monnaie, Greek](https://www.gascogne-monnaie.com/catalog/index.php?cPath=136) | 3 | 55 | 55 | EUR |
+| [Numidas, Greek](https://www.numidas.at/m%C3%BCnzen/greek/) | 1 | 9 | 2 | EUR |
+| [Minotaur, Roman Republic](https://www.minotaurcoins.com/roman-republic-1) | 1 | 4 | 4 | SGD |
+| [Kinzer, Roman Republican](https://kinzercoins.com/collections/roman-republican) | 1 | 1 | 1 | USD |
+
+WooCommerce parsers follow observed pagination links, reconcile unique product IDs against the seller's total, and require prices and purchase/stock evidence. Product-level currency was checked rather than inferred from `$`. Pashiz has a different pagination container, covered by a regression. Praefectus mixes antiquities with coins, so its parser additionally requires coin-denomination or metal/size evidence; underspecified titles, objects, lots and unpriced items are excluded. Current sold/reserved labels override positive stock classes without interpreting historical provenance sales as current stock status.
+
+Ancient Coin Traders exposes quantities interpreted by its own public code: zero is sold, 999 or more is reserved. An Add to Cart label alone is insufficient. Gascogne requires matching title, EUR price, item ID and an enabled purchase form on each of its 55 product pages. Numidas combines Jimdo offer metadata, inventory and purchase-button state. Minotaur checks the Wix category's total against visible cards and inventory for individual specimens. Kinzer requires an exact pictured specimen and a matching single purchase variant; its much larger Roman Empire category sells representative pools and is excluded.
+
+Observed linked sale terms were reviewed for these scopes. Praefectus expressly permits noncommercial attributed use. No specific automated-catalog restriction was found for the other newly enabled scopes; Numidas's shop-terms route itself is excluded by robots and was not fetched. The app stores short titles, prices, availability and seller/image links, not full seller descriptions or downloaded images. Access rules continue to be checked on every scan.
+
+The registry now contains 95 entries with dated support findings. The Sources filter distinguishes unsupported parsers from inaccessible sites, login-only prices, empty catalogs and permission requirements. Golden Rule's first page is readable, but page 2 and a separate Hellenistic category return 403, so it remains disabled. CNG and FORVM do not provide usable robots responses; VCoins returns 403. Numismall, CG Coins and Cerberus explicitly prohibit spidering/crawling/scraping in their terms; they remain disabled. Other custom catalogs still need parsers and are identified as such rather than represented as active feeds.
+
+The following sections retain the initial 25 September validation history. Current enabled scopes and support findings above supersede older pending notes.
 
 ## Enabled scopes
 

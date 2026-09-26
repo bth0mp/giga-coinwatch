@@ -168,7 +168,19 @@ def create_app(db, runtime) -> FastAPI:
 
     @app.get("/sources")
     def sources(request: Request):
-        return templates.TemplateResponse(request, "sources.html", context(request, page="sources", sources=db.list_sources()))
+        from .source_support import describe_support
+        sources = [dict(s, support=describe_support(s)) for s in db.list_sources()]
+        counts = {}
+        for s in sources:
+            key = s['support']['key']
+            if key not in counts:
+                counts[key] = dict(s['support'], count=0)
+            counts[key]['count'] += 1
+        selected = request.query_params.get('status', '')
+        visible = [s for s in sources if not selected or s['support']['key'] == selected]
+        return templates.TemplateResponse(request, "sources.html", context(
+            request, page="sources", sources=visible, source_total=len(sources),
+            support_counts=list(counts.values()), selected_status=selected))
 
     def find_search(search_id: int):
         try:

@@ -2,7 +2,7 @@
 
 giga-coinwatch is a self-hosted ancient-coin listing monitor for a personal collection. Its local dashboard shows observed fixed-price listings, wanted coin searches, scan history, source health and dealer discovery leads. The first full scan of a source records its existing stock; later observations can appear as new coins. A saved source is not necessarily an active scraper: check **Sources** for actual coverage and errors. Optional wider-web search shows individual coin listings only after the seller's page provides evidence of a fixed price and purchase availability; coverage is not exhaustive.
 
-The five dealer scopes enabled by default are:
+The fifteen dealer scopes enabled by default are:
 
 | Dealer | Monitored stock |
 | --- | --- |
@@ -11,8 +11,24 @@ The five dealer scopes enabled by default are:
 | RomanCoinShop | Roman Republic |
 | MRB Coins | Roman Republic, $35 or less |
 | Edward J. Waddell / Coin.com | Roman Republican silver |
+| Bargain Bin Ancients | Greek coins |
+| Pashiz Coins | Greek coins |
+| Praefectus Coins | Individually priced coins in Showcase |
+| Vilmar Numismatics | Ancient coins |
+| Bactrianumis | Oriental Greek coins |
+| Ancient Coin Traders | Greek coins |
+| Gascogne Monnaie | Greek coins |
+| Numidas | Greek coins |
+| Minotaur Coins | Roman Republic |
+| Kinzer Coins | Exact pictured Roman Republican specimens |
 
-The bundled registry contains 81 dealer/storefront entries, including additional ancient and mixed-period sellers saved for review. Dealers with restrictions on automated collection stay disabled. Coverage is limited to the categories above, not each shop's full inventory; see [source validation](docs/source-validation.md) for evidence and limitations. Discovery checks a public dealer directory and, when Tavily is configured, searches the wider web for additional domains. Leads enter a review queue, with supporting shop links when fixed-price ancient stock can be confirmed. Accepting a dealer saves it to Sources; recurring monitoring needs a validated parser.
+The bundled registry contains 95 dealer/storefront entries. Shanna Schmidt's Greek catalog is also supported and can be enabled in Sources. Existing installations keep their enable/pause choices when upgrading: newly supported sources show **Ready to enable** until enabled. Coverage is limited to the named categories, not each dealer's entire inventory; see [source validation](docs/source-validation.md) for evidence and limitations.
+
+**Sources → Monitoring status** separates active and ready sources from access blocks, permission requirements, unavailable sites, login-only prices, empty catalogs and parsers still needed. Each reviewed source includes its scope or reason and review date. These checks are observations, not a guarantee of future access. Catalog monitoring uses no Tavily credits.
+
+Complete scans mark previously available coins that disappeared from that catalog as **unavailable**, keeping their saved records and history. A partial or failed scan never infers disappearance. New adapters verify catalog totals and pagination before declaring complete; mixed catalogs exclude groups, antiquities and unpriced products. Sold and reserved records cannot match wanted searches as available coins.
+
+Discovery checks a public dealer directory and, when Tavily is configured, searches the wider web for additional domains. Leads enter a review queue, with supporting shop links when fixed-price ancient stock can be confirmed. Accepting a dealer saves it to Sources; recurring monitoring needs a validated parser.
 
 Choose **one** running mode for a collection database. Both modes serve the dashboard at <http://127.0.0.1:8000/> and run the daily schedule inside giga-coinwatch. Keep the PC awake for scheduled scans.
 

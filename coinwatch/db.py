@@ -104,11 +104,26 @@ class Database:
             }.items():
                 if name not in web_columns:
                     c.execute(f'ALTER TABLE search_web_results ADD COLUMN {name} {definition}')
+            source_columns = {row['name'] for row in c.execute('PRAGMA table_info(sources)')}
+            for name, definition in {
+                'support_status': "TEXT NOT NULL DEFAULT 'needs_review'",
+                'support_checked': "TEXT NOT NULL DEFAULT ''",
+            }.items():
+                if name not in source_columns:
+                    c.execute(f'ALTER TABLE sources ADD COLUMN {name} {definition}')
             for s in seeds:
                 c.execute('INSERT OR IGNORE INTO sources(id,name,url,adapter,enabled,note) VALUES(?,?,?,?,?,?)',
                           (s['id'], s['name'], s['url'], s.get('adapter') or '', bool(s.get('enabled')), s.get('note', '')))
-                c.execute('UPDATE sources SET name=?,url=?,adapter=?,note=? WHERE id=?',
-                          (s['name'], s['url'], s.get('adapter') or '', s.get('note', ''), s['id']))
+                adapter = s.get('adapter') or ''
+                # A different catalog needs a fresh baseline; metadata-only updates do not.
+                c.execute('''UPDATE sources SET baseline_complete=0,last_count=0,last_pages=0,
+                             last_attempt=NULL,last_success=NULL,last_error=NULL
+                             WHERE id=? AND (url<>? OR adapter<>?)''', (s['id'], s['url'], adapter))
+                c.execute('''UPDATE sources SET name=?,url=?,adapter=?,note=?,support_status=?,support_checked=?
+                             WHERE id=?''',
+                          (s['name'], s['url'], adapter, s.get('note', ''),
+                           s.get('support_status', 'ready' if adapter else 'needs_review'),
+                           s.get('support_checked', ''), s['id']))
                 if not s.get('adapter'):
                     c.execute('UPDATE sources SET enabled=0 WHERE id=?', (s['id'],))
             for k, v in dict(timezone='Europe/London', scan_time='09:00', csrf_token=secrets.token_urlsafe(32), last_scheduled_date='').items():
@@ -379,7 +394,11 @@ class Database:
             cutoff = (datetime.now(timezone.utc)-timedelta(seconds=120)).isoformat(timespec='seconds')
             if not c.execute("SELECT 1 FROM runs WHERE id=? AND status='running' AND heartbeat>=?", (run_id, cutoff)).fetchone():
                 raise ValueError('The scan lease has expired or belongs to another run.')
-            baseline = c.execute('SELECT baseline_complete FROM sources WHERE id=?', (source['id'],)).fetchone()[0]
+            current = c.execute('SELECT baseline_complete,url,adapter FROM sources WHERE id=?', (source['id'],)).fetchone()
+            if current is None or current['url'] != source['url'] or current['adapter'] != source['adapter']:
+                raise ValueError('Source monitoring scope changed during the scan.')
+            baseline = current['baseline_complete']
+            observed_ids = set()
             for item in items:
                 key = item.external_id or item.url
                 old = c.execute('SELECT * FROM listings WHERE source_id=? AND external_id=?', (source['id'], key)).fetchone()
@@ -393,9 +412,17 @@ class Database:
                     new = int(bool(baseline))
                     new_count += new
                     id = c.execute('INSERT INTO listings(source_id,external_id,url,title,price,currency,image_url,category,availability,listed_at,last_seen,first_seen,is_new) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', (source['id'], key) + values + (now, new)).lastrowid
+                observed_ids.add(id)
                 c.execute('INSERT OR IGNORE INTO aliases VALUES(?,?,?)', (source['id'], item.url, id))
                 if not old or old['price'] != str(item.price) or old['availability'] != item.availability:
                     c.execute('INSERT INTO observations(listing_id,observed_at,price,availability) VALUES(?,?,?,?)', (id, now, str(item.price), item.availability))
+            if complete and not error:
+                # A full catalog sweep can establish absence; a partial scan cannot.
+                missing = [r for r in c.execute("SELECT id,price FROM listings WHERE source_id=? AND availability='available'", (source['id'],))
+                           if r['id'] not in observed_ids]
+                c.executemany("UPDATE listings SET availability='unavailable' WHERE id=?", [(r['id'],) for r in missing])
+                c.executemany("INSERT INTO observations(listing_id,observed_at,price,availability) VALUES(?,?,?,'unavailable')",
+                              [(r['id'], now, r['price']) for r in missing])
             if complete and not error and not baseline:
                 c.execute('UPDATE sources SET baseline_complete=1 WHERE id=?', (source['id'],))
                 c.execute('UPDATE listings SET is_new=0 WHERE source_id=?', (source['id'],))
