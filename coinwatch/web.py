@@ -257,7 +257,7 @@ def create_app(db, runtime) -> FastAPI:
         return RedirectResponse("/search", status_code=303)
 
     @app.post("/wanted/{search_id}/scan")
-    def wanted_scan(search_id: int, csrf_token: str = Form(""), web_queries: str = Form("1"), web_minutes: str = Form("10")):
+    def wanted_scan(search_id: int, csrf_token: str = Form(""), web_queries: str = Form("1"), web_minutes: str = Form("10"), web_depth: str = Form("basic")):
         require_csrf(csrf_token)
         search = find_search(search_id)
         try:
@@ -277,14 +277,16 @@ def create_app(db, runtime) -> FastAPI:
         if minutes != 10 and not search["include_web"]:
             raise HTTPException(status_code=400, detail="Enable wider-web checking under Edit search before choosing a web check time")
         try:
-            started = runtime.start_scan(mode="coins", search_id=search_id, web_queries=count, web_minutes=minutes)
+            from .scanner import validate_web_depth
+            validate_web_depth(web_depth, "manual", search)
+            started = runtime.start_scan(mode="coins", search_id=search_id, web_queries=count, web_minutes=minutes, web_depth=web_depth)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from None
         return _scan_redirect(f"/wanted/{search_id}", started)
 
     @app.post("/search/scan")
-    def search_scan(search_id: int = Form(...), csrf_token: str = Form(""), web_queries: str = Form("1"), web_minutes: str = Form("10")):
-        return wanted_scan(search_id, csrf_token, web_queries, web_minutes)
+    def search_scan(search_id: int = Form(...), csrf_token: str = Form(""), web_queries: str = Form("1"), web_minutes: str = Form("10"), web_depth: str = Form("basic")):
+        return wanted_scan(search_id, csrf_token, web_queries, web_minutes, web_depth)
 
     @app.get("/discoveries")
     def discoveries(request: Request):

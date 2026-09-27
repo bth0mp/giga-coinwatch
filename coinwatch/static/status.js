@@ -7,6 +7,7 @@
 
   const queryCount = document.querySelector('[data-web-query-count]');
   const webMinutes = document.querySelector('[data-web-minutes]');
+  const webDepth = document.querySelector('[data-web-depth]');
   const queryEstimate = document.querySelector('[data-web-query-estimate]');
   const searchSelect = document.querySelector('[data-search-select]');
   const criteriaLink = document.querySelector('[data-search-criteria-link]');
@@ -15,24 +16,31 @@
       if (searchSelect) {
         const selected = searchSelect.selectedOptions[0];
         queryCount.disabled = !selected?.value || selected.dataset.includeWeb !== 'true';
-        if (webMinutes) webMinutes.disabled = queryCount.disabled;
         if (criteriaLink) {
           criteriaLink.hidden = !selected?.value;
           criteriaLink.href = selected?.dataset.editUrl || '#new-search-heading';
         }
-        if (queryCount.disabled) {
-          queryEstimate.textContent = selected?.value
-            ? 'Wider-web checking is off for this search. Search now refreshes monitored stock only. Enable the wider web when editing this search.'
-            : 'Create a search below to choose what to look for.';
-          return;
-        }
+      }
+      if (webMinutes) webMinutes.disabled = queryCount.disabled;
+      if (webDepth) {
+        webDepth.disabled = queryCount.disabled;
+        if (webDepth.disabled) webDepth.value = 'basic';
+      }
+      if (queryCount.disabled) {
+        queryEstimate.textContent = searchSelect && !searchSelect.value
+          ? 'Create a search below to choose what to look for.'
+          : 'Wider-web checking is off for this search. This scan refreshes monitored stock only. Enable the wider web when editing this search.';
+        return;
       }
       const count = Number(queryCount.value);
+      const deep = webDepth?.value === 'advanced';
+      const credits = count * (deep ? 2 : 1);
       queryEstimate.textContent = Number.isInteger(count) && count >= 1 && count <= 50
-        ? `Estimate: up to ${count} basic Tavily ${count === 1 ? 'credit' : 'credits'} and ${count * 20} candidate links before sale checks.`
+        ? `Estimate: up to ${credits} Tavily ${credits === 1 ? 'credit' : 'credits'} and ${count * 20} search candidate links${deep ? ', plus up to 100 extra product links from dealer catalogs' : ''} before sale checks. Duplicates or unavailable pages may reduce results.`
         : 'Choose a whole number from 1 to 50.';
     };
     queryCount.addEventListener('input', updateEstimate);
+    webDepth?.addEventListener('change', updateEstimate);
     searchSelect?.addEventListener('change', updateEstimate);
     updateEstimate();
   }

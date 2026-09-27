@@ -140,15 +140,17 @@ def _exclude_domains(domains):
     return clean
 
 
-def search_web(query, api_key, *, max_results=10, exclude_domains=None) -> list[dict]:
+def search_web(query, api_key, *, max_results=10, exclude_domains=None, search_depth='basic') -> list[dict]:
     """Return search leads, without claiming price or availability verification."""
     _validate_key(api_key)
     if not isinstance(query, str) or not query.strip() or len(query) > 1000:
         raise WebSearchError('Enter a search query between 1 and 1,000 characters.')
     if type(max_results) is not int or not 1 <= max_results <= 20:
         raise WebSearchError('Request between 1 and 20 web results.')
+    if search_depth not in ('basic', 'advanced'):
+        raise WebSearchError('Choose basic or advanced web-search depth.')
     payload = {
-        'query': query.strip(), 'search_depth': 'basic', 'max_results': max_results,
+        'query': query.strip(), 'search_depth': search_depth, 'max_results': max_results,
         'topic': 'general', 'include_answer': False, 'include_raw_content': False,
         'include_images': False, 'auto_parameters': False,
     }

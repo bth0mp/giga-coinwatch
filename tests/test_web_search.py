@@ -95,6 +95,33 @@ def test_search_uses_basic_request_and_cleans_untrusted_results(monkeypatch):
     assert set(results[0]) == {'url', 'title', 'snippet'}
 
 
+@pytest.mark.parametrize('depth', ['basic', 'advanced'])
+def test_explicit_search_depth_is_sent_without_automatic_cost_changes(monkeypatch, depth):
+    bodies = []
+    def respond(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={'results': [
+            {'title': 'Greek silver coin', 'url': 'https://shop.example/coin', 'content': 'For sale'}]})
+    mock_api(monkeypatch, respond)
+    results = web_search.search_web('Greek silver coin', 'tvly-test-key', max_results=20, search_depth=depth)
+    assert len(bodies) == 1
+    assert bodies[0]['search_depth'] == depth
+    assert bodies[0]['max_results'] == 20
+    assert bodies[0]['auto_parameters'] is False
+    assert bodies[0]['include_answer'] is False
+    assert bodies[0]['include_raw_content'] is False
+    assert results == [{'url': 'https://shop.example/coin', 'title': 'Greek silver coin', 'snippet': 'For sale'}]
+
+
+@pytest.mark.parametrize('depth', ['', 'Advanced', 'basic ', 'auto', 'fast', None, True, 2, [], {}])
+def test_invalid_search_depth_fails_before_network(monkeypatch, depth):
+    def forbidden(**kwargs):
+        pytest.fail('Invalid search depth must not spend a search request')
+    monkeypatch.setattr(web_search.httpx, 'Client', forbidden)
+    with pytest.raises(web_search.WebSearchError, match='depth'):
+        web_search.search_web('Greek silver coin', 'tvly-test-key', search_depth=depth)
+
+
 @pytest.mark.parametrize(('status', 'message'), [
     (401, 'key'), (403, 'access'), (429, 'rate'), (432, 'limit'), (433, 'limit'), (500, 'unavailable')])
 def test_provider_errors_are_safe_and_not_retried(monkeypatch, status, message):

@@ -19,6 +19,10 @@ class FetchError(Exception):
     pass
 
 
+class _PermissionRequired(FetchError):
+    """A local access restriction, which must never trigger network retries."""
+
+
 @dataclass
 class Page:
     url: str
@@ -136,13 +140,24 @@ class RobotsRules:
 
 
 class Fetcher:
-    def __init__(self, delay=1.0, timeout=15, stop_event=None, budget=900):
+    def __init__(self, delay=1.0, timeout=15, stop_event=None, budget=900, blocked_hosts=()):
         self.delay = delay
         self.timeout = timeout
         self.stop_event = stop_event or threading.Event()
         self.deadline = time.monotonic() + budget
         self._robots = {}
         self._last = {}
+        self.blocked_hosts = tuple(blocked_hosts)
+
+    def _check_destination(self, url):
+        if not self.blocked_hosts:
+            return
+        def normalized(host):
+            return host.rstrip('.').encode('idna').decode('ascii').lower().removeprefix('www.')
+        host = normalized(validate_url_shape(url).hostname)
+        if any(host == (domain := normalized(value)) or host.endswith('.' + domain)
+               for value in self.blocked_hosts):
+            raise _PermissionRequired('This dealer requires permission or login before automated checks.')
 
     def _check(self):
         if self.stop_event.is_set():
@@ -159,6 +174,7 @@ class Fetcher:
 
     def _request(self, url):
         self._check()
+        self._check_destination(url)
         p, address = validate_url(url)
         host = p.hostname
         delay = max(self.delay, self._robots.get(f'{p.scheme}://{p.netloc}', RobotsRules('')).delay)
@@ -206,9 +222,12 @@ class Fetcher:
             conn.close()
 
     def _request_retry(self, url):
+        self._check_destination(url)
         for attempt in range(3):
             try:
                 status, headers, text = self._request(url)
+            except _PermissionRequired:
+                raise
             except FetchError:
                 if attempt == 2:
                     raise
@@ -234,6 +253,7 @@ class Fetcher:
         raise FetchError('Request failed.')
 
     def _ensure_robots(self, url):
+        self._check_destination(url)
         p = validate_url_shape(url)
         origin = f'{p.scheme}://{p.netloc}'
         if origin in self._robots:
@@ -258,6 +278,7 @@ class Fetcher:
 
     def get(self, url):
         for _ in range(6):
+            self._check_destination(url)
             validate_url_shape(url)
             if not self._ensure_robots(url).allowed(url):
                 raise FetchError('robots.txt disallows this catalog URL.')

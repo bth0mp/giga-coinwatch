@@ -136,3 +136,31 @@ def test_cli_passes_selected_watch_time_budget_to_sale_verification(tmp_path, mo
     assert main() == 0
     assert json.loads(capsys.readouterr().out)['status'] == 'complete'
     assert budgets == [1800]
+
+
+@pytest.mark.parametrize('flags', [
+    ['--web-depth', 'auto'], ['--web-depth', 'advanced'],
+    ['--web-depth', 'advanced', '--search-id', '1'],
+])
+def test_cli_rejects_invalid_or_unscoped_deep_search(tmp_path, flags):
+    result = command('--data-dir', tmp_path, 'scan', *flags)
+    assert result.returncode == 2
+    assert '--web-depth' in result.stderr
+    assert not (tmp_path / 'catalog.db').exists()
+
+
+def test_cli_passes_advanced_search_with_requested_query_limit(tmp_path, monkeypatch, capsys):
+    from coinwatch.__main__ import main
+    db = Database(tmp_path / 'catalog.db')
+    db.initialize([])
+    watch = db.save_search(dict(name='Boeotia', keywords='Boeotia', include_web=True))
+    monkeypatch.setattr('coinwatch.web_search.load_api_key', lambda _: 'test-key')
+    options = []
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *a, **kw: options.append(kw) or [])
+    monkeypatch.setattr(sys, 'argv', ['coinwatch', '--data-dir', str(tmp_path), 'scan', '--mode', 'coins',
+        '--search-id', str(watch), '--web-depth', 'advanced', '--web-queries', '30', '--web-minutes', '60'])
+    assert main() == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['web_queries'] == 30 and result['web_depth'] == 'advanced'
+    assert len(options) == 30 and all(row['search_depth'] == 'advanced' for row in options)
+    assert '60 Tavily credits' in result['summary']

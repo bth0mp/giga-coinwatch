@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
@@ -41,6 +42,26 @@ def validate_web_minutes(web_minutes, kind, selected_search):
         raise ValueError('A custom web time limit requires a manual scan of one wanted search with wider-web search enabled.')
 
 
+def validate_web_depth(web_depth, kind, selected_search, mode='coins'):
+    if web_depth not in ('basic', 'advanced'):
+        raise ValueError('Choose a web search depth: basic or advanced.')
+    if web_depth == 'advanced' and (kind != 'manual' or not selected_search or not selected_search['include_web']):
+        raise ValueError('Deep web search requires a manual scan of one wanted search with wider-web search enabled.')
+    if web_depth == 'advanced' and mode != 'coins':
+        raise ValueError('Deep web search requires coins mode; run dealer discovery separately.')
+
+
+class _PageCapture:
+    """Reuse the verifier's one fetched page without a second seller request."""
+    def __init__(self, delegate):
+        self.delegate = delegate
+        self.page = None
+
+    def get(self, url):
+        self.page = self.delegate.get(url)
+        return self.page
+
+
 class Scanner:
     def __init__(self, db, scrape=None, progress=None, stop_event=None):
         self.db = db
@@ -49,7 +70,8 @@ class Scanner:
         self.stop_event = stop_event or threading.Event()
         self.run_id = None
 
-    def _scan_web(self, searches, errors, notes, query_limit=1, web_minutes=10):
+    def _scan_web(self, searches, errors, notes, query_limit=1, web_minutes=10, web_depth='basic'):
+        from .catalog_links import catalog_links, is_catalog_url, same_dealer
         from .sale_checks import verify_sale
         from .searches import CRITERIA, web_matcher, web_query_variants
         from .web_search import WebSearchError, load_api_key, search_web
@@ -68,7 +90,58 @@ class Scanner:
         sale_fetcher = Fetcher(stop_event=self.stop_event, budget=web_minutes * 60)
         cache, stored, changed = {}, {}, set()
         queries, budget_reached = 0, False
+        deep = web_depth == 'advanced'
+        catalog_pages, product_links, queued_catalogs = set(), set(), set()
+        restricted = {urlsplit(source['url']).hostname.lower().removeprefix('www.')
+                      for source in self.db.list_sources() if source.get('support_status') in ('permission_required', 'login_required')}
+        if deep:
+            sale_fetcher.blocked_hosts = restricted
         budget_message = f'Wanted-sale verification reached its {web_minutes}-minute budget; remaining wanted-search queries and page checks were skipped.'
+
+        def restricted_url(url):
+            host = (urlsplit(url).hostname or '').lower().removeprefix('www.')
+            return any(host == domain or host.endswith('.' + domain) for domain in restricted)
+
+        def remember(state, rows):
+            # Paid leads survive a deadline. They remain hidden until verified.
+            for row in rows:
+                if row['url'] not in state['gathered'] and row['url'] not in state['retained']:
+                    state['pending'].setdefault(row['url'], dict(row, sale_status='unverified',
+                        sale_checked_at='', price='', currency='', sale_reason='Awaiting a sale check from this Deep search.'))
+            state.update(successful=True, dirty=True)
+
+        def expand(state, page, original_url):
+            if (not page or len(catalog_pages) >= 20 or page.url in catalog_pages
+                    or restricted_url(page.url) or not same_dealer(original_url, page.url)):
+                return
+            links = catalog_links(page, state['search'])
+            if not links['products'] and not links['next_pages']:
+                return
+            catalog_pages.add(page.url)
+            for row in links['products']:
+                url = row['url']
+                if len(product_links) >= 100:
+                    break
+                if url in product_links or url in state['gathered'] or restricted_url(url):
+                    continue
+                product_links.add(url)
+                remember(state, [row])
+                state['deep_queue'].append(row)
+            for url in links['next_pages']:
+                if len(catalog_pages | queued_catalogs) >= 20:
+                    break
+                if url in catalog_pages or url in queued_catalogs or restricted_url(url):
+                    continue
+                queued_catalogs.add(url)
+                row = dict(url=url, title='Dealer catalog page', snippet='Catalog pagination found during Deep search')
+                remember(state, [row])
+                state['deep_queue'].append(row)
+
+        def retry_category(row):
+            return (deep and len(catalog_pages) < 20 and is_catalog_url(row['url'])
+                    and any(text in row.get('sale_reason', '') for text in (
+                        'single primary product', 'individual product identity', 'individual ancient coin',
+                        'separate product cards', 'catalog or price range')))
 
         def can_work(search):
             if self.stop_event.is_set() or not self.db.renew_lease(self.run_id):
@@ -118,17 +191,29 @@ class Scanner:
                 return True
             if url not in cache:
                 previous = state['retained'].get(url, {})
-                if cooling_down(previous):
+                if cooling_down(previous) and not retry_category(previous):
                     state['skipped'].add(url)
                     return True
                 self.progress(phase='Checking sale listings', source=search['name'])
-                cache[url] = verify_sale(row, sale_fetcher)
+                if deep:
+                    capture = _PageCapture(sale_fetcher)
+                    if restricted_url(url):
+                        cache[url] = dict(row, sale_status='unverified', price='', currency='',
+                            sale_checked_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                            sale_reason='This dealer requires permission or login before automated checks.')
+                    else:
+                        cache[url] = verify_sale(row, capture)
+                        if cache[url]['sale_status'] != 'available':
+                            expand(state, capture.page, url)
+                else:
+                    cache[url] = verify_sale(row, sale_fetcher)
                 has_budget()
             checked = dict(cache[url])
             if checked['sale_status'] == 'available' and not state['matches'](checked):
                 checked.update(sale_status='rejected', price='', currency='',
                                sale_reason='The verified seller title or offer does not match this wanted search\'s criteria.')
             state['gathered'][url] = checked
+            state['pending'].pop(url, None)
             state.update(successful=True, dirty=True)
             return True
 
@@ -140,8 +225,15 @@ class Scanner:
                 return True
             current_errors = state['errors'] or ([state['prior_error']] if not state['query_succeeded'] and state['prior_error'] else [])
             message = '; '.join(current_errors + ([budget_message] if budget_reached else [])) or None
+            rows = list(state['gathered'].values())
+            if deep:
+                # Keep known available offers ahead of the bounded candidate store.
+                rows = ([row for url, row in state['retained'].items()
+                         if row['sale_status'] == 'available' and url not in state['gathered']]
+                        + sorted(rows, key=lambda row: row['sale_status'] != 'available')
+                        + list(state['pending'].values()))
             recorded = self.db.record_web_search(
-                search['id'], list(state['gathered'].values()) if state['successful'] else None,
+                search['id'], rows if state['successful'] else None,
                 message, expected_query=search['web_query'], expected_search=search, run_id=self.run_id, merge=True)
             if not recorded:
                 can_work(search)
@@ -150,10 +242,18 @@ class Scanner:
             state['dirty'] = False
             return True
 
-        def check_rows(state, rows):
+        def check_rows(state, rows, *, explore=True):
             for index, row in enumerate(rows):
                 if not assess(state, row):
                     break
+                if deep and explore:
+                    # Follow relevant shop links promptly, before unrelated search hits.
+                    while state['deep_queue']:
+                        child = state['deep_queue'].popleft()
+                        if not assess(state, child):
+                            break
+                        if len(state['gathered']) % 20 == 0 and not checkpoint(state):
+                            break
                 if (index + 1) % 20 == 0 and not checkpoint(state):
                     break
             checkpoint(state)
@@ -167,7 +267,7 @@ class Scanner:
             except ValueError:
                 continue
             states.append(dict(search=search, retained={row['url']: row for row in previous['results']},
-                               matches=web_matcher(search), gathered={}, skipped=set(), errors=[],
+                               matches=web_matcher(search), gathered={}, pending={}, deep_queue=deque(), skipped=set(), errors=[],
                                successful=False, dirty=False, query_succeeded=False, prior_error=previous['error']))
 
         # Refresh known matches for every selected watch before spending time on new candidates.
@@ -176,7 +276,7 @@ class Scanner:
                 break
             priority = [row for row in state['retained'].values()
                         if row['sale_status'] == 'available' and state['matches'](row)]
-            check_rows(state, sorted(priority, key=lambda row: row.get('sale_checked_at') or ''))
+            check_rows(state, sorted(priority, key=lambda row: row.get('sale_checked_at') or ''), explore=False)
 
         for state in states:
             if self.stop_event.is_set() or budget_reached:
@@ -190,7 +290,8 @@ class Scanner:
                 queries += 1
                 error, halt_broad_scan = None, False
                 try:
-                    results = search_web(query, api_key, max_results=20)
+                    options = {'search_depth': 'advanced'} if deep else {}
+                    results = search_web(query, api_key, max_results=20, **options)
                 except WebSearchError as e:
                     error = str(e)
                     halt_broad_scan = query_limit > 1
@@ -200,9 +301,13 @@ class Scanner:
                     error = 'Wider web search failed. Please try again later.'
                 else:
                     state.update(successful=True, dirty=True, query_succeeded=True)
-                    for result in results:
-                        if not assess(state, result):
-                            break
+                    if deep:
+                        remember(state, results)
+                        has_budget()
+                    else:
+                        for result in results:
+                            if not assess(state, result):
+                                break
                 if error:
                     state['errors'].append(error)
                     state['dirty'] = True
@@ -216,9 +321,17 @@ class Scanner:
                 if budget_reached:
                     break
 
+            if deep:
+                check_rows(state, list(state['pending'].values()))
+                categories = [row for row in state['retained'].values() if retry_category(row)]
+                check_rows(state, categories)
             remaining = [row for url, row in state['retained'].items() if url not in state['gathered']]
             check_rows(state, sorted(remaining, key=lambda row:
                        (row.get('sale_status') == 'rejected', row.get('sale_checked_at') or '')))
+        if deep:
+            notes.append(f'Deep web search: {queries} advanced queries attempted (up to {queries * 2} Tavily credits); '
+                         f'{len(catalog_pages)} catalog pages explored; {len(product_links)} product links found. '
+                         'Limits: 20 catalog pages and 100 extra product links, within the selected time limit.')
         skipped = sum(len(state['skipped']) for state in states)
         if skipped:
             notes.append(f'Sale checks: {skipped} recent unsuccessful candidates skipped during their retry cooldown.')
@@ -280,11 +393,12 @@ class Scanner:
                     errors.append(f'Candidate skipped: {exc}')
         return count
 
-    def run(self, kind='manual', source_ids=None, include_discovery=True, mode='both', search_id=None, web_queries=1, web_minutes=10):
+    def run(self, kind='manual', source_ids=None, include_discovery=True, mode='both', search_id=None, web_queries=1, web_minutes=10, web_depth='basic'):
         mode = normalize_scan_mode(mode, include_discovery)
         selected_search = get_scan_search(self.db, mode, search_id)
         validate_web_queries(web_queries, kind, selected_search)
         validate_web_minutes(web_minutes, kind, selected_search)
+        validate_web_depth(web_depth, kind, selected_search, mode)
         query_limit = web_queries
         run_kind = f'manual-{mode}' if kind == 'manual' else kind
         run_id = self.db.claim_run(run_kind)
@@ -309,7 +423,7 @@ class Scanner:
                 from .sources import scrape_source
                 scrape = scrape_source
             fetcher = Fetcher(stop_event=self.stop_event)
-            sources = self.db.list_sources() if mode in ('coins', 'both') else []
+            sources = self.db.list_sources() if mode in ('coins', 'both') and web_depth == 'basic' else []
             for source in sources:
                 if not source['enabled'] or (source_ids and source['id'] not in source_ids):
                     continue
@@ -329,7 +443,7 @@ class Scanner:
                     errors.append(f"{source['name']}: {e}")
             if mode in ('coins', 'both') and not self.stop_event.is_set():
                 searches = [selected_search] if selected_search else self.db.list_searches(enabled_only=True)
-                web_queries, web_leads = self._scan_web(searches, errors, notes, query_limit=query_limit, web_minutes=web_minutes)
+                web_queries, web_leads = self._scan_web(searches, errors, notes, query_limit=query_limit, web_minutes=web_minutes, web_depth=web_depth)
                 if selected_search:
                     try:
                         current_search = self.db.get_search(selected_search['id'])
@@ -354,7 +468,9 @@ class Scanner:
         finally:
             heartbeat_stop.set()
             thread.join(timeout=2)
-            if mode == 'coins':
+            if mode == 'coins' and web_depth == 'advanced':
+                summary = 'Deep web search; monitored catalog matches were read from the existing catalog.'
+            elif mode == 'coins':
                 summary = f'Coin scan: {seen} listings checked; {new} newly found.'
             elif mode == 'dealers':
                 summary = f'Dealer scan: {candidates} dealer candidates.'
@@ -368,5 +484,5 @@ class Scanner:
                 summary += '\n' + '\n'.join(errors)
             self.db.finish_run(run_id, status, summary)
             self.progress(phase='Idle', source='', last_error='\n'.join(errors))
-        return {'status': status, 'mode': mode, 'search_id': search_id, 'summary': summary, 'seen': seen, 'new': new,
+        return {'status': status, 'mode': mode, 'search_id': search_id, 'web_depth': web_depth, 'summary': summary, 'seen': seen, 'new': new,
                 'candidates': candidates, 'matches': matches, 'web_queries': web_queries, 'web_leads': web_leads, 'errors': errors}

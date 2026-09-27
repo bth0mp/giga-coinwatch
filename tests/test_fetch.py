@@ -135,3 +135,69 @@ def test_https_request_keeps_original_host_header(monkeypatch):
 def test_catalog_text_encoding(body, content_type, expected):
     from coinwatch.fetch import decode_text
     assert decode_text(body, content_type) == expected
+
+
+@pytest.mark.parametrize('host', ['blocked.example', 'www.blocked.example', 'shop.blocked.example', 'BLOCKED.EXAMPLE.'])
+def test_permission_restricted_origin_is_never_requested_or_retried(monkeypatch, host):
+    from coinwatch.fetch import Fetcher
+    fetcher = Fetcher(delay=0, blocked_hosts=('WWW.Blocked.Example',))
+    monkeypatch.setattr(fetcher, '_request', lambda url: pytest.fail('Restricted host must not be requested'))
+    monkeypatch.setattr(fetcher, '_pause', lambda seconds: pytest.fail('Permission restrictions must not be retried'))
+    with pytest.raises(FetchError, match='permission or login'):
+        fetcher.get(f'https://{host}/coin')
+    with pytest.raises(FetchError, match='permission or login'):
+        fetcher._request_retry(f'https://{host}/coin')
+
+
+def test_content_redirect_cannot_fetch_permission_restricted_host(monkeypatch):
+    from coinwatch.fetch import Fetcher
+    fetcher = Fetcher(delay=0, blocked_hosts=('blocked.example',))
+    requested = []
+    def request(url):
+        requested.append(url)
+        if url == 'https://allowed.example/robots.txt':
+            return 404, {}, ''
+        if url == 'https://allowed.example/coin':
+            return 302, {'location': 'https://www.blocked.example/new-coin'}, ''
+        pytest.fail('Redirected restricted host must not be requested')
+    monkeypatch.setattr(fetcher, '_request', request)
+    with pytest.raises(FetchError, match='permission or login'):
+        fetcher.get('https://allowed.example/coin')
+    assert requested == ['https://allowed.example/robots.txt', 'https://allowed.example/coin']
+
+
+def test_robots_redirect_cannot_fetch_permission_restricted_host(monkeypatch):
+    from coinwatch.fetch import Fetcher
+    fetcher = Fetcher(delay=0, blocked_hosts=('blocked.example',))
+    requested = []
+    def request(url):
+        requested.append(url)
+        if url == 'https://allowed.example/robots.txt':
+            return 301, {'location': 'https://login.blocked.example/robots.txt'}, ''
+        pytest.fail('Restricted robots destination must not be requested')
+    monkeypatch.setattr(fetcher, '_request', request)
+    with pytest.raises(FetchError, match='permission or login'):
+        fetcher.get('https://allowed.example/coin')
+    assert requested == ['https://allowed.example/robots.txt']
+
+
+@pytest.mark.parametrize('host', ['notblocked.example', 'blocked.example.other.test'])
+def test_unrelated_host_with_similar_name_remains_fetchable(monkeypatch, host):
+    from coinwatch.fetch import Fetcher
+    fetcher = Fetcher(delay=0, blocked_hosts=('blocked.example',))
+    requested = []
+    def request(url):
+        requested.append(url)
+        return (404, {}, '') if url.endswith('/robots.txt') else (200, {}, '<h1>Greek coin</h1>')
+    monkeypatch.setattr(fetcher, '_request', request)
+    assert fetcher.get(f'https://{host}/coin').text == '<h1>Greek coin</h1>'
+    assert requested == [f'https://{host}/robots.txt', f'https://{host}/coin']
+
+
+def test_runtime_host_policy_applies_to_direct_requests_before_dns(monkeypatch):
+    from coinwatch.fetch import Fetcher
+    fetcher = Fetcher(delay=0)
+    fetcher.blocked_hosts = {'blocked.example'}
+    monkeypatch.setattr('coinwatch.fetch.validate_url', lambda url: pytest.fail('Blocked request must stop before DNS'))
+    with pytest.raises(FetchError, match='permission or login'):
+        fetcher._request('https://blocked.example/coin')

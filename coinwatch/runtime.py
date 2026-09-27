@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from .scanner import Scanner, get_scan_search, normalize_scan_mode, validate_web_minutes, validate_web_queries
+from .scanner import Scanner, get_scan_search, normalize_scan_mode, validate_web_minutes, validate_web_queries, validate_web_depth
 
 log = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class Runtime:
         self._worker = None
         self._scanner = None
         self._scheduler = None
-        self._state = {'running': False, 'mode': '', 'search_id': None, 'web_queries': 0, 'web_minutes': 0, 'phase': 'Idle', 'source': '', 'last_error': ''}
+        self._state = {'running': False, 'mode': '', 'search_id': None, 'web_queries': 0, 'web_minutes': 0, 'web_depth': 'basic', 'phase': 'Idle', 'source': '', 'last_error': ''}
 
     def _update(self, **values):
         with self._lock:
@@ -115,23 +115,24 @@ class Runtime:
                 log.exception('Scheduler check failed')
             self._stop.wait(30)
 
-    def start_scan(self, kind='manual', mode='both', search_id=None, web_queries=1, web_minutes=10):
+    def start_scan(self, kind='manual', mode='both', search_id=None, web_queries=1, web_minutes=10, web_depth='basic'):
         mode = normalize_scan_mode(mode)
         selected_search = get_scan_search(self.db, mode, search_id)
         validate_web_queries(web_queries, kind, selected_search)
         validate_web_minutes(web_minutes, kind, selected_search)
+        validate_web_depth(web_depth, kind, selected_search, mode)
         with self._lock:
             if self._state['running'] or self._stop.is_set():
                 return False
-            self._state.update(running=True, mode=mode, search_id=search_id, web_queries=web_queries, web_minutes=web_minutes, phase='Starting scan', source='', last_error='')
-            self._worker = threading.Thread(target=self._work, args=(kind, mode, search_id, web_queries, web_minutes), name='catalog-scan', daemon=True)
+            self._state.update(running=True, mode=mode, search_id=search_id, web_queries=web_queries, web_minutes=web_minutes, web_depth=web_depth, phase='Starting scan', source='', last_error='')
+            self._worker = threading.Thread(target=self._work, args=(kind, mode, search_id, web_queries, web_minutes, web_depth), name='catalog-scan', daemon=True)
             self._worker.start()
         return True
 
-    def _work(self, kind, mode='both', search_id=None, web_queries=1, web_minutes=10):
+    def _work(self, kind, mode='both', search_id=None, web_queries=1, web_minutes=10, web_depth='basic'):
         try:
             self._scanner = Scanner(self.db, progress=self._update, stop_event=self._stop)
-            result = self._scanner.run(kind, mode=mode, search_id=search_id, web_queries=web_queries, web_minutes=web_minutes)
+            result = self._scanner.run(kind, mode=mode, search_id=search_id, web_queries=web_queries, web_minutes=web_minutes, web_depth=web_depth)
             if mode == 'both' and search_id is None and (result['status'] == 'complete' or (kind == 'scheduled' and result['status'] in ('partial', 'failed'))):
                 state = schedule_state(self.db.settings())
                 if state['due']:
@@ -142,7 +143,7 @@ class Runtime:
             log.exception('Background scan failed')
             self._update(last_error=str(e))
         finally:
-            self._update(running=False, mode='', search_id=None, web_queries=0, web_minutes=0, phase='Idle', source='')
+            self._update(running=False, mode='', search_id=None, web_queries=0, web_minutes=0, web_depth='basic', phase='Idle', source='')
 
     def stop(self):
         self._stop.set()

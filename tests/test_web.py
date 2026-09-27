@@ -24,9 +24,9 @@ class RuntimeStub:
     def stop(self):
         self.stopped = True
 
-    def start_scan(self, kind="manual", mode="both", search_id=None, web_queries=1, web_minutes=10):
+    def start_scan(self, kind="manual", mode="both", search_id=None, web_queries=1, web_minutes=10, web_depth="basic"):
         self.scan_requested = True
-        self.scan_request = {"kind": kind, "mode": mode, "search_id": search_id, "web_queries": web_queries, "web_minutes": web_minutes}
+        self.scan_request = {"kind": kind, "mode": mode, "search_id": search_id, "web_queries": web_queries, "web_minutes": web_minutes, "web_depth": web_depth}
         return True
 
     def search_results(self, search_id):
@@ -160,7 +160,7 @@ def test_scan_modes_validate_scope_and_return_to_current_page(tmp_path):
         response = client.post("/scan", data={**token(db), "mode": mode, "return_to": "/discoveries"})
         assert response.status_code == 303
         assert response.headers["location"] == "/discoveries?scan=started"
-        assert runtime.scan_request == {"kind": "manual", "mode": mode, "search_id": None, "web_queries": 1, "web_minutes": 10}
+        assert runtime.scan_request == {"kind": "manual", "mode": mode, "search_id": None, "web_queries": 1, "web_minutes": 10, "web_depth": "basic"}
     assert client.post("/scan", data={**token(db), "mode": "everything"}).status_code == 400
     response = client.post("/scan", data={**token(db), "mode": "coins", "return_to": "https://other.example"})
     assert response.headers["location"] == "/?scan=started"
@@ -182,7 +182,7 @@ def test_wanted_search_create_edit_match_and_scan(tmp_path):
     assert "My denarii" in client.get("/wanted").text
     response = client.post(f"/wanted/{search['id']}/scan", data=token(db))
     assert response.status_code == 303
-    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": search["id"], "web_queries": 1, "web_minutes": 10}
+    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": search["id"], "web_queries": 1, "web_minutes": 10, "web_depth": "basic"}
     response = client.post(f"/wanted/{search['id']}", data={**token(db), "name": "Lower budget", "coin_type": "denarius",
                                                          "currency": "GBP", "max_price": "40", "enabled": "true"})
     assert response.status_code == 303
@@ -306,7 +306,7 @@ def test_search_tab_runs_selected_watch_with_chosen_budget(tmp_path):
     response = client.post("/search/scan", data={**token(db), "search_id": selected, "web_queries": "17"})
     assert response.status_code == 303
     assert response.headers["location"] == f"/wanted/{selected}?scan=started"
-    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": selected, "web_queries": 17, "web_minutes": 10}
+    assert runtime.scan_request == {"kind": "manual", "mode": "coins", "search_id": selected, "web_queries": 17, "web_minutes": 10, "web_depth": "basic"}
     runtime.scan_request = None
     assert client.post("/search/scan", data={"search_id": selected, "web_queries": "17"}).status_code == 403
     assert client.post("/search/scan", data={**token(db), "search_id": selected, "web_queries": "51"}).status_code == 400
@@ -363,6 +363,68 @@ def test_manual_search_time_control_reaches_worker_without_increasing_query_limi
             assert response.status_code == 400
             assert runtime.scan_request is None
         assert client.post(endpoint, data={"search_id": search_id, "web_minutes": "30"}).status_code == 403
+
+
+def test_search_depth_controls_preserve_existing_query_and_time_defaults(tmp_path):
+    from bs4 import BeautifulSoup
+    client, db, runtime = setup_catalog(tmp_path)
+    search_id = db.save_search({"name": "Athens", "mint": "Athens", "include_web": True})
+    for page_url in ("/search", f"/wanted/{search_id}"):
+        document = BeautifulSoup(client.get(page_url).text, "html.parser")
+        depth = document.select_one('select[name="web_depth"]')
+        assert depth is not None and not depth.has_attr('disabled')
+        assert [(option['value'], option.get_text(' ', strip=True)) for option in depth.select('option')] == [
+            ('basic', 'Standard (1 credit/query)'), ('advanced', 'Deep (2 credits/query)')]
+        assert depth.select_one('option[selected]')['value'] == 'basic'
+        assert document.select_one('input[name="web_queries"]')['value'] == '5'
+        assert document.select_one('input[name="web_minutes"]')['value'] == '10'
+        assert '20 catalog pages' in document.get_text(' ', strip=True)
+        assert '100 extra product pages' in document.get_text(' ', strip=True)
+    for endpoint in ('/search/scan', f'/wanted/{search_id}/scan'):
+        response = client.post(endpoint, data={**token(db), 'search_id': search_id,
+                                              'web_queries': '17', 'web_minutes': '30', 'web_depth': 'advanced'})
+        assert response.status_code == 303
+        assert runtime.scan_request['web_depth'] == 'advanced'
+        assert runtime.scan_request['web_queries'] == 17
+        assert runtime.scan_request['web_minutes'] == 30
+        assert client.post(endpoint, data={**token(db), 'search_id': search_id}).status_code == 303
+        assert runtime.scan_request['web_depth'] == 'basic'
+
+
+def test_search_detail_shows_active_run_budgets_only_for_that_search(tmp_path):
+    from bs4 import BeautifulSoup
+    client, db, runtime = setup_catalog(tmp_path)
+    search_id = db.save_search({'name': 'Athens', 'mint': 'Athens', 'include_web': True})
+    other_id = db.save_search({'name': 'Rome', 'mint': 'Rome', 'include_web': True})
+    runtime.snapshot = lambda: {'running': True, 'search_id': search_id, 'web_depth': 'advanced',
+                               'web_queries': 30, 'web_minutes': 60, 'phase': 'Searching the wider web',
+                               'source': 'Athens', 'last_error': ''}
+    document = BeautifulSoup(client.get(f'/wanted/{search_id}').text, 'html.parser')
+    assert document.select_one('input[name="web_queries"]')['value'] == '30'
+    assert document.select_one('input[name="web_minutes"]')['value'] == '60'
+    assert document.select_one('select[name="web_depth"] option[selected]')['value'] == 'advanced'
+    assert 'Active run: Deep' in document.get_text(' ', strip=True)
+    other = BeautifulSoup(client.get(f'/wanted/{other_id}').text, 'html.parser')
+    assert other.select_one('input[name="web_queries"]')['value'] == '5'
+    assert other.select_one('input[name="web_minutes"]')['value'] == '10'
+    assert other.select_one('select[name="web_depth"] option[selected]')['value'] == 'basic'
+
+
+def test_search_depth_rejects_invalid_or_disabled_web_scans_before_worker(tmp_path):
+    from bs4 import BeautifulSoup
+    client, db, runtime = setup_catalog(tmp_path)
+    search_id = db.save_search({'name': 'Athens', 'mint': 'Athens', 'include_web': False})
+    for page_url in ('/search', f'/wanted/{search_id}'):
+        document = BeautifulSoup(client.get(page_url).text, 'html.parser')
+        assert document.select_one('select[name="web_depth"]').has_attr('disabled')
+    for endpoint in ('/search/scan', f'/wanted/{search_id}/scan'):
+        for depth in ('advanced', 'deep', 'unlimited', 'ADVANCED'):
+            response = client.post(endpoint, data={**token(db), 'search_id': search_id, 'web_depth': depth})
+            assert response.status_code == 400 and runtime.scan_request is None
+        assert client.post(endpoint, data={'search_id': search_id, 'web_depth': 'advanced'}).status_code == 403
+    empty, _, _ = setup_catalog(tmp_path / 'empty')
+    document = BeautifulSoup(empty.get('/search').text, 'html.parser')
+    assert document.select_one('select[name="web_depth"]').has_attr('disabled')
 
 
 def test_wanted_web_results_count_for_sale_domains_and_show_availability_check_dates(tmp_path):
