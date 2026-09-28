@@ -148,8 +148,8 @@ def test_deep_scan_bounds_catalog_pages_and_additional_product_links(setup):
         pages[url] = catalog(*cards, next_page=f'?page={i+1}')
     result = Scanner(db).run(mode='coins', search_id=watch, web_depth='advanced')
     assert result['status'] == 'complete'
-    assert result['web_leads'] == 100
-    assert len([url for url in fetched if '/product/' in url]) == 100
+    assert result['web_leads'] == 200
+    assert len([url for url in fetched if '/product/' in url]) == 200
     assert len([url for url in fetched if '/collections/' in url]) == 20
     assert len(fetched) == len(set(fetched))
 
@@ -230,3 +230,113 @@ def test_known_available_offers_refresh_before_new_catalog_children(setup, monke
     result = Scanner(db).run(mode='coins', search_id=watch, web_depth='advanced')
     assert result['web_leads'] == 2
     assert fetched[:2] == [category, known]
+
+
+def test_deep_scan_reaches_other_catalogs_before_paginating_first_dealer(setup, monkeypatch):
+    db, watch, pages, fetched, _ = setup
+    other = 'https://other.example'
+    root = ROOT + '/collections/boeotia'
+    second = other + '/collections/boeotia'
+    pages[root] = catalog(card('/product/one'), next_page='?page=2')
+    pages[root + '?page=2'] = catalog(card('/product/two'))
+    pages[ROOT + '/product/one'] = pages[ROOT + '/product/two'] = product()
+    pages[second] = catalog(card('/product/three'))
+    pages[other + '/product/three'] = product()
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *a, **kw:
+                        [dict(url=url, title='Boeotia coins') for url in (root, second)])
+    result = Scanner(db).run(mode='coins', search_id=watch, web_depth='advanced')
+    assert result['web_leads'] == 3
+    assert fetched.index(second) < fetched.index(root + '?page=2')
+    assert fetched.index(other + '/product/three') < fetched.index(root + '?page=2')
+
+
+def test_deep_queries_mix_worldwide_and_distinct_dealer_batches_within_allowance(setup):
+    db, watch, pages, _, requests = setup
+    pages[ROOT + '/collections/boeotia'] = catalog()
+    db.initialize([dict(id=f'dealer-{i}', name=f'Dealer {i:02}', url=f'https://dealer{i}.example',
+                        adapter='', enabled=False, support_status='needs_adapter') for i in range(18)] + [
+        dict(id='blocked', name='Blocked', url='https://blocked.example', adapter='', support_status='permission_required'),
+        dict(id='auction', name='Auction', url='https://auction.example', adapter='', support_status='not_applicable')])
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=6, web_depth='advanced')
+    assert result['web_queries'] == len(requests) == 6
+    assert ['include_domains' in row for row in requests] == [False, False, True, False, False, True]
+    first, second = requests[2]['include_domains'], requests[5]['include_domains']
+    assert len(first) == len(second) == 8 and set(first).isdisjoint(second)
+    assert not {'blocked.example', 'auction.example'} & set(first + second)
+    assert '12 Tavily credits' in result['summary']
+
+
+def test_deep_retries_readable_parser_failures_but_keeps_access_cooldown(setup, monkeypatch):
+    db, watch, pages, fetched, _ = setup
+    missed, blocked = ROOT + '/product/missed', ROOT + '/product/blocked'
+    rows = [dict(url=url, title=TITLE, sale_status='unverified',
+                 sale_checked_at=datetime.now(timezone.utc).isoformat(), sale_reason=reason)
+            for url, reason in [(missed, 'A single primary product could not be identified.'),
+                                (blocked, 'HTTP 403 fetching dealer.example.')]]
+    db.record_web_search(watch, rows)
+    pages[missed] = product()
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *a, **kw: [])
+    result = Scanner(db).run(mode='coins', search_id=watch, web_depth='advanced')
+    assert result['web_leads'] == 1 and fetched == [missed]
+
+
+def test_deep_catalog_budget_is_shared_across_dealers(setup, monkeypatch):
+    db, watch, pages, fetched, _ = setup
+    roots = []
+    for dealer in range(5):
+        base = f'https://dealer{dealer}.example'
+        roots.append(dict(url=base + '/collections/boeotia', title='Boeotia coins'))
+        for page in range(1, 25):
+            url = base + '/collections/boeotia' + (f'?page={page}' if page > 1 else '')
+            pages[url] = catalog(card('/product/one'), next_page=f'?page={page+1}')
+        pages[base + '/product/one'] = product()
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *a, **kw: roots)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_depth='advanced')
+    catalogs = [url for url in fetched if '/collections/' in url]
+    assert result['web_leads'] == 5 and len(catalogs) == 80
+    assert all(sum(url.startswith(f'https://dealer{dealer}.example/') for url in catalogs) <= 20
+               for dealer in range(5))
+
+
+@pytest.mark.parametrize('dealers,pages_each,expected', [(1, 40, 20), (5, 24, 80)])
+def test_readable_empty_catalogs_consume_deep_page_budgets(setup, monkeypatch, dealers, pages_each, expected):
+    db, watch, pages, fetched, _ = setup
+    roots = []
+    for dealer in range(dealers):
+        for page in range(pages_each):
+            url = f'https://dealer{dealer}.example/collections/boeotia-{page}'
+            pages[url] = catalog()
+            roots.append(dict(url=url, title='Boeotia coins'))
+    batches = iter([roots[start:start + 20] for start in range(0, len(roots), 20)])
+    monkeypatch.setattr('coinwatch.web_search.search_web', lambda *a, **kw: next(batches))
+    result = Scanner(db).run(mode='coins', search_id=watch, web_queries=(len(roots) + 19) // 20,
+                             web_depth='advanced')
+    assert len(fetched) == expected
+    assert all(sum(url.startswith(f'https://dealer{dealer}.example/') for url in fetched) <= 20
+               for dealer in range(dealers))
+    assert f'{expected} catalog pages explored' in result['summary']
+
+
+def test_deadline_after_checkpoint_persists_partial_without_refreshing_unchecked_rows(setup, monkeypatch):
+    import coinwatch.scanner as module
+    db, watch, _, fetched, _ = setup
+    fetchers = []
+    original_fetcher = module.Fetcher
+    def make_fetcher(**options):
+        fetcher = original_fetcher(**options)
+        fetchers.append(fetcher)
+        return fetcher
+    monkeypatch.setattr(module, 'Fetcher', make_fetcher)
+    original_record = db.record_web_search
+    def expire_after_checkpoint(*args, **options):
+        recorded = original_record(*args, **options)
+        for fetcher in fetchers:
+            fetcher.deadline = 0
+        return recorded
+    monkeypatch.setattr(db, 'record_web_search', expire_after_checkpoint)
+    result = Scanner(db).run(mode='coins', search_id=watch, web_depth='advanced')
+    saved = db.search_results(watch)
+    assert result['status'] == saved['status'] == 'partial'
+    assert 'budget' in saved['error']
+    assert len(saved['results']) == 1 and fetched == []
+    assert saved['results'][0]['sale_checked_at'] == ''

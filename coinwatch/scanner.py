@@ -1,13 +1,32 @@
 import logging
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlsplit
 
 from .fetch import Fetcher
 
 log = logging.getLogger(__name__)
+DEEP_CATALOG_PAGES = 80
+DEEP_PAGES_PER_DEALER = 20
+DEEP_PRODUCT_LINKS = 200
+
+
+def _dealer_host(url):
+    return (urlsplit(url).hostname or '').lower().removeprefix('www.')
+
+
+def _fair_rows(rows):
+    """Give each dealer a turn before returning to its other candidate pages."""
+    dealers = {}
+    for row in rows:
+        dealers.setdefault(_dealer_host(row['url']), deque()).append(row)
+    while dealers:
+        for host in list(dealers):
+            yield dealers[host].popleft()
+            if not dealers[host]:
+                del dealers[host]
 
 
 def normalize_scan_mode(mode, include_discovery=True):
@@ -72,8 +91,8 @@ class Scanner:
 
     def _scan_web(self, searches, errors, notes, query_limit=1, web_minutes=10, web_depth='basic'):
         from .catalog_links import catalog_links, is_catalog_url, same_dealer
-        from .sale_checks import verify_sale
-        from .searches import CRITERIA, web_matcher, web_query_variants
+        from .sale_checks import individual_ancient_coin_title, verify_sale
+        from .searches import CRITERIA, deep_web_query_variants, web_matcher, web_query_variants
         from .web_search import WebSearchError, load_api_key, search_web
         searches = [search for search in searches if search['include_web']]
         if not searches:
@@ -92,15 +111,26 @@ class Scanner:
         queries, budget_reached = 0, False
         deep = web_depth == 'advanced'
         catalog_pages, product_links, queued_catalogs = set(), set(), set()
-        restricted = {urlsplit(source['url']).hostname.lower().removeprefix('www.')
-                      for source in self.db.list_sources() if source.get('support_status') in ('permission_required', 'login_required')}
+        pages_per_dealer = Counter()
+        sources = self.db.list_sources()
+        restricted = {_dealer_host(source['url']) for source in sources
+                      if source.get('support_status') in ('permission_required', 'login_required')}
         if deep:
             sale_fetcher.blocked_hosts = restricted
         budget_message = f'Wanted-sale verification reached its {web_minutes}-minute budget; remaining wanted-search queries and page checks were skipped.'
 
         def restricted_url(url):
-            host = (urlsplit(url).hostname or '').lower().removeprefix('www.')
+            host = _dealer_host(url)
             return any(host == domain or host.endswith('.' + domain) for domain in restricted)
+
+        dealer_hosts = list(dict.fromkeys(_dealer_host(source['url']) for source in sources
+                            if source.get('support_status') in ('ready', 'needs_adapter')
+                            and not restricted_url(source['url'])))
+        dealer_batches = [dealer_hosts[i:i + 8] for i in range(0, len(dealer_hosts), 8)]
+
+        def catalog_room(url):
+            return (len(catalog_pages) < DEEP_CATALOG_PAGES
+                    and pages_per_dealer[_dealer_host(url)] < DEEP_PAGES_PER_DEALER)
 
         def remember(state, rows):
             # Paid leads survive a deadline. They remain hidden until verified.
@@ -111,37 +141,48 @@ class Scanner:
             state.update(successful=True, dirty=True)
 
         def expand(state, page, original_url):
-            if (not page or len(catalog_pages) >= 20 or page.url in catalog_pages
+            if (not page or not catalog_room(page.url) or page.url in catalog_pages
                     or restricted_url(page.url) or not same_dealer(original_url, page.url)):
                 return
             links = catalog_links(page, state['search'])
-            if not links['products'] and not links['next_pages']:
+            if (not links['products'] and not links['next_pages']
+                    and not is_catalog_url(page.url) and original_url not in queued_catalogs):
                 return
             catalog_pages.add(page.url)
+            pages_per_dealer[_dealer_host(page.url)] += 1
             for row in links['products']:
                 url = row['url']
-                if len(product_links) >= 100:
+                if len(product_links) >= DEEP_PRODUCT_LINKS:
                     break
                 if url in product_links or url in state['gathered'] or restricted_url(url):
                     continue
                 product_links.add(url)
                 remember(state, [row])
-                state['deep_queue'].append(row)
+                state['product_queue'].append(row)
             for url in links['next_pages']:
-                if len(catalog_pages | queued_catalogs) >= 20:
-                    break
-                if url in catalog_pages or url in queued_catalogs or restricted_url(url):
+                if (not catalog_room(url) or url in catalog_pages or url in queued_catalogs
+                        or restricted_url(url)):
                     continue
                 queued_catalogs.add(url)
                 row = dict(url=url, title='Dealer catalog page', snippet='Catalog pagination found during Deep search')
                 remember(state, [row])
-                state['deep_queue'].append(row)
+                state['catalog_queue'].append(row)
 
         def retry_category(row):
-            return (deep and len(catalog_pages) < 20 and is_catalog_url(row['url'])
+            return (deep and catalog_room(row['url']) and is_catalog_url(row['url'])
                     and any(text in row.get('sale_reason', '') for text in (
                         'single primary product', 'individual product identity', 'individual ancient coin',
                         'separate product cards', 'catalog or price range')))
+
+        def retry_product(state, row):
+            # A deliberate Deep run can recheck readable parser failures after fixes.
+            # Access failures, sold stock and mismatched titles keep their cooldowns.
+            return (deep and not is_catalog_url(row['url'])
+                    and individual_ancient_coin_title(row.get('title', ''))
+                    and state['candidate_matches'](row)
+                    and any(text in row.get('sale_reason', '') for text in (
+                        'single primary product', 'individual product identity',
+                        'individual ancient coin', 'fixed price could not be verified')))
 
         def can_work(search):
             if self.stop_event.is_set() or not self.db.renew_lease(self.run_id):
@@ -159,13 +200,14 @@ class Scanner:
                 return False
             return True
 
-        def has_budget():
+        def has_budget(state):
             nonlocal budget_reached
             if time.monotonic() < sale_fetcher.deadline:
                 return True
             if not budget_reached:
                 errors.append(budget_message)
                 budget_reached = True
+            state['dirty'] = True
             return False
 
         def cooling_down(row):
@@ -184,14 +226,16 @@ class Scanner:
 
         def assess(state, row):
             search = state['search']
-            if not can_work(search) or not has_budget():
+            if not can_work(search) or not has_budget(state):
                 return False
             url = row['url']
             if url in state['gathered']:
                 return True
             if url not in cache:
+                if deep and (is_catalog_url(url) or url in queued_catalogs) and not catalog_room(url):
+                    return True
                 previous = state['retained'].get(url, {})
-                if cooling_down(previous) and not retry_category(previous):
+                if cooling_down(previous) and not (retry_category(previous) or retry_product(state, previous)):
                     state['skipped'].add(url)
                     return True
                 self.progress(phase='Checking sale listings', source=search['name'])
@@ -207,7 +251,7 @@ class Scanner:
                             expand(state, capture.page, url)
                 else:
                     cache[url] = verify_sale(row, sale_fetcher)
-                has_budget()
+                has_budget(state)
             checked = dict(cache[url])
             if checked['sale_status'] == 'available' and not state['matches'](checked):
                 checked.update(sale_status='rejected', price='', currency='',
@@ -247,9 +291,9 @@ class Scanner:
                 if not assess(state, row):
                     break
                 if deep and explore:
-                    # Follow relevant shop links promptly, before unrelated search hits.
-                    while state['deep_queue']:
-                        child = state['deep_queue'].popleft()
+                    # Check products promptly; pagination waits until other roots get a turn.
+                    while state['product_queue']:
+                        child = state['product_queue'].popleft()
                         if not assess(state, child):
                             break
                         if len(state['gathered']) % 20 == 0 and not checkpoint(state):
@@ -267,7 +311,9 @@ class Scanner:
             except ValueError:
                 continue
             states.append(dict(search=search, retained={row['url']: row for row in previous['results']},
-                               matches=web_matcher(search), gathered={}, pending={}, deep_queue=deque(), skipped=set(), errors=[],
+                               matches=web_matcher(search),
+                               candidate_matches=web_matcher({**search, 'currency': '', 'max_price': ''}),
+                               gathered={}, pending={}, product_queue=deque(), catalog_queue=deque(), skipped=set(), errors=[],
                                successful=False, dirty=False, query_succeeded=False, prior_error=previous['error']))
 
         # Refresh known matches for every selected watch before spending time on new candidates.
@@ -282,15 +328,22 @@ class Scanner:
             if self.stop_event.is_set() or budget_reached:
                 break
             search = state['search']
-            variants = (web_query_variants(search, query_limit) if query_limit > 1 else [search['web_query']]) if api_key else []
+            variants = (deep_web_query_variants(search, query_limit) if deep else
+                        (web_query_variants(search, query_limit) if query_limit > 1 else [search['web_query']])) if api_key else []
             for index, query in enumerate(variants):
-                if not can_work(search) or not has_budget():
+                if not can_work(search) or not has_budget(state):
                     break
-                self.progress(phase=f'Searching the wider web ({index + 1}/{len(variants)})', source=search['name'])
+                targeted = deep and dealer_batches and index % 3 == 2
+                scope = 'dealer groups' if targeted else 'the wider web'
+                self.progress(phase=f'Searching {scope} ({index + 1}/{len(variants)})', source=search['name'])
                 queries += 1
                 error, halt_broad_scan = None, False
                 try:
                     options = {'search_depth': 'advanced'} if deep else {}
+                    if targeted:
+                        options['include_domains'] = dealer_batches[(index // 3) % len(dealer_batches)]
+                    if deep and restricted:
+                        options['exclude_domains'] = sorted(restricted)
                     results = search_web(query, api_key, max_results=20, **options)
                 except WebSearchError as e:
                     error = str(e)
@@ -303,7 +356,7 @@ class Scanner:
                     state.update(successful=True, dirty=True, query_succeeded=True)
                     if deep:
                         remember(state, results)
-                        has_budget()
+                        has_budget(state)
                     else:
                         for result in results:
                             if not assess(state, result):
@@ -322,16 +375,24 @@ class Scanner:
                     break
 
             if deep:
-                check_rows(state, list(state['pending'].values()))
                 categories = [row for row in state['retained'].values() if retry_category(row)]
-                check_rows(state, categories)
+                recoverable = [row for row in state['retained'].values() if retry_product(state, row)]
+                roots = list(state['pending'].values()) + categories + recoverable
+                check_rows(state, _fair_rows(sorted(roots, key=lambda row: not is_catalog_url(row['url']))))
             remaining = [row for url, row in state['retained'].items() if url not in state['gathered']]
             check_rows(state, sorted(remaining, key=lambda row:
                        (row.get('sale_status') == 'rejected', row.get('sale_checked_at') or '')))
+            if deep:
+                # Breadth-first pagination: pages discovered here go behind other dealers.
+                while state['catalog_queue'] and not budget_reached and not self.stop_event.is_set():
+                    if not can_work(search):
+                        break
+                    check_rows(state, [state['catalog_queue'].popleft()])
         if deep:
             notes.append(f'Deep web search: {queries} advanced queries attempted (up to {queries * 2} Tavily credits); '
                          f'{len(catalog_pages)} catalog pages explored; {len(product_links)} product links found. '
-                         'Limits: 20 catalog pages and 100 extra product links, within the selected time limit.')
+                         f'Limits: {DEEP_CATALOG_PAGES} catalog pages, up to {DEEP_PAGES_PER_DEALER} per dealer, '
+                         f'and {DEEP_PRODUCT_LINKS} extra product links, within the selected time limit.')
         skipped = sum(len(state['skipped']) for state in states)
         if skipped:
             notes.append(f'Sale checks: {skipped} recent unsuccessful candidates skipped during their retry cooldown.')

@@ -3,11 +3,18 @@ import logging
 import threading
 from collections import Counter
 from datetime import datetime, time, timedelta, timezone
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 
 from .scanner import Scanner, get_scan_search, normalize_scan_mode, validate_web_minutes, validate_web_queries, validate_web_depth
 
 log = logging.getLogger(__name__)
+
+
+def _web_result_key(url):
+    parts = urlsplit(url)
+    return (parts.scheme, parts.hostname.lower().removeprefix('www.'),
+            parts.port or (443 if parts.scheme == 'https' else 80), parts.path, parts.query)
 
 
 def schedule_state(settings, now=None):
@@ -65,16 +72,29 @@ class Runtime:
         from .web_search import WebSearchError, load_api_key
         search = self.db.get_search(search_id)
         matches = web_matcher(search)
-        result = self.db.search_results(search_id, verified_only=True)
-        result['results'] = [row for row in result['results']
-                             if individual_ancient_coin_title(row['title']) and matches(row)]
+        result = self.db.search_results(search_id)
+        retained = result['results']
+        latest = {}
+        def check_order(row):
+            # UTC ISO timestamps sort chronologically; empty pending checks sort first.
+            return row['sale_checked_at'] or '', row['sale_status'] != 'available'
+        for row in retained:
+            key = _web_result_key(row['url'])
+            if key not in latest or check_order(row) > check_order(latest[key]):
+                latest[key] = row
+        now = datetime.now(timezone.utc)
+        cutoff = (now-timedelta(hours=24)).isoformat(timespec='seconds')
+        result['results'] = [row for row in latest.values() if row['sale_status'] == 'available'
+                             and cutoff <= row['sale_checked_at'] <= now.isoformat(timespec='seconds')
+                             and individual_ancient_coin_title(row['title']) and matches(row)]
         visible_urls = {row['url'] for row in result['results']}
-        retained = self.db.search_results(search_id)['results']
         reasons = Counter()
         for row in retained:
             if row['url'] in visible_urls:
                 continue
-            if row['sale_status'] == 'available':
+            if row['url'] != latest[_web_result_key(row['url'])]['url']:
+                status, reason = 'Duplicate', 'This URL is superseded by another URL\'s newer or equally recent sale check.'
+            elif row['sale_status'] == 'available':
                 if not individual_ancient_coin_title(row['title']):
                     status, reason = 'Rejected', 'The primary item is not a supported individual ancient coin.'
                 elif not matches(row):

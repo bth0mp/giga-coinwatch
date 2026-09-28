@@ -119,9 +119,11 @@ def _clean_url(value):
         return ''
 
 
-def _exclude_domains(domains):
+def _validate_domains(domains, action):
     if not isinstance(domains, list) or len(domains) > 150:
-        raise WebSearchError('Provide at most 150 domain names to exclude.')
+        raise WebSearchError(f'Provide at most 150 domain names to {action}.')
+    if action == 'include' and not domains:
+        raise WebSearchError('Provide at least one domain name to include.')
     clean = []
     for domain in domains:
         try:
@@ -134,13 +136,15 @@ def _exclude_domains(domains):
                 raise ValueError('Invalid hostname')
             validate_url_shape('https://' + host)
         except (FetchError, ValueError, UnicodeError):
-            raise WebSearchError('Excluded domains must be public hostnames without paths, ports, credentials, or wildcards.') from None
+            label = 'Included' if action == 'include' else 'Excluded'
+            raise WebSearchError(f'{label} domains must be public hostnames without paths, ports, credentials, or wildcards.') from None
         if host not in clean:
             clean.append(host)
     return clean
 
 
-def search_web(query, api_key, *, max_results=10, exclude_domains=None, search_depth='basic') -> list[dict]:
+def search_web(query, api_key, *, max_results=10, exclude_domains=None, include_domains=None,
+               search_depth='basic') -> list[dict]:
     """Return search leads, without claiming price or availability verification."""
     _validate_key(api_key)
     if not isinstance(query, str) or not query.strip() or len(query) > 1000:
@@ -155,7 +159,10 @@ def search_web(query, api_key, *, max_results=10, exclude_domains=None, search_d
         'include_images': False, 'auto_parameters': False,
     }
     if exclude_domains is not None:
-        payload['exclude_domains'] = _exclude_domains(exclude_domains)
+        payload['exclude_domains'] = _validate_domains(exclude_domains, 'exclude')
+    if include_domains is not None:
+        payload['include_domains'] = _validate_domains(include_domains, 'include')
+        payload['include_domains_mode'] = 'restrict'
     try:
         # A fixed destination, no environment proxies and no redirects keep the
         # bearer token at the intended API. Do not automatically spend retry credits.

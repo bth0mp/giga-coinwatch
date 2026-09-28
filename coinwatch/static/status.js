@@ -36,7 +36,7 @@
       const deep = webDepth?.value === 'advanced';
       const credits = count * (deep ? 2 : 1);
       queryEstimate.textContent = Number.isInteger(count) && count >= 1 && count <= 50
-        ? `Estimate: up to ${credits} Tavily ${credits === 1 ? 'credit' : 'credits'} and ${count * 20} search candidate links${deep ? ', plus up to 100 extra product links from dealer catalogs' : ''} before sale checks. Duplicates or unavailable pages may reduce results.`
+        ? `Estimate: up to ${credits} Tavily ${credits === 1 ? 'credit' : 'credits'} and ${count * 20} search candidate links${deep ? ', plus up to 200 extra product links from dealer catalogs' : ''} before sale checks. Duplicates or unavailable pages may reduce results.`
         : 'Choose a whole number from 1 to 50.';
     };
     queryCount.addEventListener('input', updateEstimate);

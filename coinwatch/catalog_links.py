@@ -11,23 +11,23 @@ from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlun
 from bs4 import BeautifulSoup
 
 from .fetch import FetchError, validate_url_shape
-from .sale_checks import (_BID, _INFO_HOSTS, _INFO_PATH, _amount, _types, _visible,
+from .sale_checks import (_BID, _EXCLUDED, _NEGATIVE, _INFO_HOSTS, _INFO_PATH, _amount, _types, _visible,
                           _walk, individual_ancient_coin_title)
 from .searches import web_matcher
 
 MAX_PRODUCTS = 20
 MAX_NEXT_PAGES = 2
-_CARDS = ('.product-card, .product-item, .product, .card-wrapper, .card--product, .is-product, '
+_CARDS = ('.product-card, .product-item, .product, .card-wrapper, .card--product, .is-product, .shopProduct, '
           '[itemtype*="schema.org/Product"], [data-hook="product-list-grid-item"], '
           'table.productListingData > tr, table.productListingData > tbody > tr')
 _RELATED = ('nav, header, footer, aside, [role="navigation"], .related, .related-products, '
             '.related_products, .upsells, .up-sells, .cross-sells, .recommendations, '
             '.product-recommendations')
 _PRODUCT_PATH = re.compile(r'/(?:products?|product-page|item|itm|listing)/|/product_info\.php$|-p-\d+\.html$', re.I)
-_ACTION_PATH = re.compile(r'/(?:cart|basket|checkout|account|my-account|login|log-in|signin|sign-in|logout|register|wishlist|compare|wp-admin|download)(?:/|\.|$)', re.I)
+_ACTION_PATH = re.compile(r'/(?:cart|basket|checkout|account|my-account|login|log-in|signin|sign-in|logout|register|wishlist|compare|wp-admin|download|quickview(?:-\d+)?)(?:/|\.|$)', re.I)
 _ACTION_KEYS = {'action', 'add', 'add-to-cart', 'add_to_cart', 'addtocart', 'cart', 'checkout', 'buy',
                 'bid', 'remove', 'delete', 'add_to_wishlist', 'add-to-wishlist', 'wishlist', 'compare'}
-_PAGE_KEYS = {'page', 'p', 'paged'}
+_PAGE_KEYS = {'page', 'p', 'paged', 'page_standard'}
 _SORT_KEYS = {'sort', 'sort_by', 'orderby', 'order'}
 _AUCTION_HOSTS = ('biddr.com', 'liveauctioneers.com', 'invaluable.com', 'the-saleroom.com')
 _MONEY = re.compile(r'(?:[$£€]|\b(?:USD|EUR|GBP|AUD|CAD|CHF|SGD)\b)\s*(\d[\d.,]*)|'
@@ -93,6 +93,7 @@ def is_catalog_url(url):
     if _PRODUCT_PATH.search(path) or any(key.lower() in {'products_id', 'product_id', 'coinid', 'zpg'} for key in query):
         return False
     return bool(re.search(r'/(?:collections?|product-category|categories|category)/[^/]+|/greek-c-\d+\.html$|/[^/]+-c-\d+\.html$', path, re.I)
+                or re.search(r'/(?:[a-z]{2}/)?(?:greek|roman|byzantine)\.html$', path, re.I)
                 or path.rstrip('/').lower() in {'/shop', '/store', '/catalog'}
                 or (path.endswith('/index.php') and re.fullmatch(r'\d+(?:_\d+)*', query.get('cPath', '')))
                 or (path.endswith('/roman-and-greek-coins.asp') and query.get('vpar', '').isdigit()))
@@ -106,6 +107,13 @@ def _text(node):
 def _shop_evidence(card):
     text = _text(card)
     return bool(_BUY.search(text) or any(_amount(first or second) for first, second in _MONEY.findall(text)))
+
+
+def _unavailable_card(card):
+    if {'outofstock', 'soldout', 'sold-out', 'product-archive'} & set(card.get('class', [])):
+        return True
+    return any(_visible(node) and _NEGATIVE.search(_text(node)) for node in card.select(
+        '.stock, .availability, .stock-status, .product-archive-label, .soldout, .sold-out, .reserved'))
 
 
 def _offer_evidence(product):
@@ -142,6 +150,15 @@ def catalog_links(page, search):
     if not base or _PRODUCT_PATH.search(urlsplit(base).path):
         return empty
     soup = BeautifulSoup(page.text, 'html.parser')
+    link_base = base
+    declared_base = soup.select_one('base[href]')
+    if declared_base:
+        link_base = _safe_url(base, declared_base['href'])
+        if not link_base:
+            return empty
+    def link_url(href):
+        return _safe_url(base, urljoin(link_base, href)) if isinstance(href, str) else ''
+    ancient_catalog = individual_ancient_coin_title(_text(soup.title) if soup.title else '')
     nodes = []
     for script in soup.select('script[type="application/ld+json"]'):
         try:
@@ -153,7 +170,7 @@ def catalog_links(page, search):
     for node in nodes:
         if 'Product' in _types(node):
             identity = node.get('url') or node.get('@id')
-            target = _safe_url(base, identity)
+            target = link_url(identity)
             if target and _key(target) == _key(base):
                 return empty  # Product recommendations are not a primary catalog.
     pager_hrefs = [anchor.get('href') for anchor in soup.select(
@@ -167,33 +184,41 @@ def catalog_links(page, search):
     preliminary = web_matcher({**search, 'currency': '', 'max_price': ''})
     products, seen, catalog_evidence = [], set(), False
 
-    def consider(href, title, shop_evidence):
+    def consider(href, title, shop_evidence, unavailable=False):
         nonlocal catalog_evidence
         if not shop_evidence or not isinstance(title, str):
             return
         title = ' '.join(title.split())[:500]
-        if not individual_ancient_coin_title(title):
-            return
-        target = _safe_url(base, href)
+        target = link_url(href)
         if not target or _key(target) == _key(base) or is_catalog_url(target):
+            return
+        # Catalogs sometimes label a coin only with its mint and devices. Keep
+        # such matching product links as leads, without inventing a denomination
+        # or weakening the later primary-page sale/title checks.
+        if not individual_ancient_coin_title(title) and not (
+                ancient_catalog and not _EXCLUDED.search(title)
+                and _PRODUCT_PATH.search(urlsplit(target).path)):
             return
         catalog_evidence = True
         key = _key(target)
-        if key not in seen and len(products) < MAX_PRODUCTS and preliminary({'title': title}):
+        if not unavailable and key not in seen and len(products) < MAX_PRODUCTS and preliminary({'title': title}):
             seen.add(key)
             products.append({'url': target, 'title': title, 'snippet': ''})
 
     for card in scope.select(_CARDS)[:500]:
         if not _visible(card) or not _shop_evidence(card):
             continue
+        unavailable = _unavailable_card(card)
         for anchor in card.select('a[href]'):
             if not _visible(anchor):
                 continue
-            title = _text(anchor) or anchor.get('title', '')
+            heading = anchor.select_one('h1, h2, h3, .product-title, .productTitle, .card__heading, .wd-entities-title')
+            title = _text(heading) if heading else _text(anchor)
+            title = title or anchor.get('title', '') or anchor.get('aria-label', '')
             if not title:
                 image = anchor.select_one('img[alt]')
                 title = image.get('alt', '') if image else ''
-            consider(anchor['href'], title, True)
+            consider(anchor['href'], title, True, unavailable)
     for item_list in nodes:
         if 'ItemList' not in _types(item_list):
             continue
@@ -211,7 +236,7 @@ def catalog_links(page, search):
     if catalog_evidence and signature:
         candidates = []
         for href in pager_hrefs:
-            target = _safe_url(base, href)
+            target = link_url(href)
             other = _page_signature(target) if target else None
             if other and other[:2] == signature[:2] and signature[2] < other[2] <= signature[2] + MAX_NEXT_PAGES:
                 candidates.append((other[2], target))

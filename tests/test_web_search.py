@@ -86,6 +86,7 @@ def test_search_uses_basic_request_and_cleans_untrusted_results(monkeypatch):
     body = json.loads(request.content)
     assert body['query'] == 'Alexander Babylon tetradrachm'
     assert body['search_depth'] == 'basic' and body['max_results'] == 10
+    assert 'include_domains' not in body and 'include_domains_mode' not in body
     assert not any(body[name] for name in ('include_answer', 'include_images', 'include_raw_content', 'auto_parameters'))
     assert len(results) == 1
     assert results[0]['url'] == 'https://shop.example/coin?id=42'
@@ -194,6 +195,47 @@ def test_excluded_domains_are_lowercased_and_deduplicated(monkeypatch):
     assert bodies[2]['exclude_domains'] == []
 
 
+def test_included_domains_restrict_the_request_without_changing_depth_or_budget(monkeypatch):
+    bodies = []
+    def respond(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={'results': []})
+    mock_api(monkeypatch, respond)
+    domains = ['Shop.Example', 'shop.example', 'M\u00fcnzen.example']
+    assert web_search.search_web('Boeotia coins', 'tvly-test-key', max_results=20,
+                                 search_depth='advanced', include_domains=domains,
+                                 exclude_domains=['sold.shop.example']) == []
+    assert len(bodies) == 1
+    assert bodies[0]['include_domains'] == ['shop.example', 'xn--mnzen-kva.example']
+    assert bodies[0]['include_domains_mode'] == 'restrict'
+    assert bodies[0]['exclude_domains'] == ['sold.shop.example']
+    assert bodies[0]['search_depth'] == 'advanced'
+    assert bodies[0]['max_results'] == 20
+    assert bodies[0]['auto_parameters'] is False
+    assert domains == ['Shop.Example', 'shop.example', 'M\u00fcnzen.example']
+
+
+def test_included_domains_accept_the_full_application_limit(monkeypatch):
+    bodies = []
+    def respond(request):
+        bodies.append(json.loads(request.content))
+        return httpx.Response(200, json={'results': []})
+    mock_api(monkeypatch, respond)
+    domains = [f'shop{i}.example' for i in range(150)]
+    web_search.search_web('Boeotia coins', 'tvly-test-key', include_domains=domains)
+    assert bodies[0]['include_domains'] == domains
+    assert bodies[0]['include_domains_mode'] == 'restrict'
+
+
+def test_empty_included_domains_cannot_silently_spend_a_global_search(monkeypatch):
+    def forbidden(**kwargs):
+        pytest.fail('An empty dealer batch must not spend a search request')
+    monkeypatch.setattr(web_search.httpx, 'Client', forbidden)
+    with pytest.raises(web_search.WebSearchError, match='domain'):
+        web_search.search_web('Boeotia coins', 'tvly-test-key', include_domains=[])
+
+
+@pytest.mark.parametrize('parameter', ['exclude_domains', 'include_domains'])
 @pytest.mark.parametrize('domains', [
     'example.com', [None], ['https://example.com'], ['example.com/path'],
     ['user@example.com'], ['example.com:443'], ['example.com?query=yes'],
@@ -202,9 +244,9 @@ def test_excluded_domains_are_lowercased_and_deduplicated(monkeypatch):
     ['bad-.example'], ['bad..example'], ['x' * 64 + '.example'],
     [f'shop{i}.example' for i in range(151)],
 ])
-def test_invalid_exclusion_domains_fail_before_network(monkeypatch, domains):
+def test_invalid_domains_fail_before_network(monkeypatch, domains, parameter):
     def forbidden(**kwargs):
-        pytest.fail('Invalid exclusions must not spend a search request')
+        pytest.fail('Invalid domains must not spend a search request')
     monkeypatch.setattr(web_search.httpx, 'Client', forbidden)
     with pytest.raises(web_search.WebSearchError, match='domain'):
-        web_search.search_web('ancient coin shops', 'tvly-test-key', exclude_domains=domains)
+        web_search.search_web('ancient coin shops', 'tvly-test-key', **{parameter: domains})

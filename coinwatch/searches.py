@@ -11,7 +11,8 @@ TEXT_FIELDS = {'name': 120, 'keywords': 500, 'coin_type': 200, 'mint': 200,
 CRITERIA = ('keywords', 'coin_type', 'mint', 'ruler', 'category', 'exclude_terms', 'currency', 'max_price')
 # Deliberately narrow: alternate spellings of the same region, not general synonyms.
 BOEOTIA_SPELLINGS = ('Boeotia', 'Boiotia', 'Boetia', 'Boeotian', 'Boiotian', 'Boetian', 'Béotie', 'Beocia', 'Beozia')
-_BOEOTIA_WORDS = {'boeotia', 'boiotia', 'boetia', 'boeotian', 'boiotian', 'boetian', 'beotie', 'beocia', 'beozia'}
+_BOEOTIA_WORDS = {'boeotia', 'boiotia', 'boetia', 'boeotian', 'boiotian', 'boetian', 'beotie', 'beocia', 'beozia',
+                  'bootien', 'boottien'}
 _GREEK = re.compile(r'\b(?:greek|griech\w*|grieg[oa]s?|grecs?|grecques?|greco|greca|greci|greche|greg[oa]s?|grecia|grece)\b')
 
 
@@ -144,7 +145,7 @@ def web_matcher(search):
     return matches_row
 
 
-def _query_cores(search):
+def _query_cores(search, spellings=BOEOTIA_SPELLINGS):
     parts, alias_seen = [], False
     for key in CRITERIA[:5]:
         for raw in _raw_terms(search[key]):
@@ -157,7 +158,7 @@ def _query_cores(search):
                 parts.append(raw)
     if alias_seen:
         return [' '.join(f'"{spelling}"' if part is None else part for part in parts)
-                for spelling in BOEOTIA_SPELLINGS]
+                for spelling in spellings]
     return [' '.join(search[k] for k in CRITERIA[:5] if search[k])]
 
 
@@ -206,4 +207,90 @@ def web_query_variants(search, count=1):
                 queries.append(query)
             if len(queries) == count:
                 return queries
+    return queries
+
+
+def deep_web_query_variants(search, count=1):
+    """Explore catalog, denomination and mint angles; final matching stays separate."""
+    if type(count) is not int or not 1 <= count <= 50:
+        raise ValueError('Choose a whole number from 1 to 50 web queries.')
+    excluded = ''.join(' -' + ('"' + term + '"' if ' ' in term else term)
+                       for term in terms(search['exclude_terms']))
+    if len(_query_cores(search)) == 1:
+        # Unknown regions and quoted names remain literal; do not invent mints.
+        core = _query_cores(search)[0]
+        candidates = [f'{core} {hint} for sale{excluded}' for hint in (
+            'ancient coins', 'coin shop catalog', 'numismatic dealer inventory',
+            'fixed price coin list', 'coin shop new arrivals', 'ancient coin collection stock')]
+        candidates.extend(web_query_variants(search, 50))
+    else:
+        # Greek is redundant geography here, but only as an unquoted category.
+        # Explicit Greek keywords/phrases and every other criterion stay intact.
+        scoped = {**search, 'category': ' '.join(raw for raw in _raw_terms(search['category'])
+                    if raw.startswith('"') or normalize(raw) != 'greek')}
+        # Thebes, Tanagra, Thespiae and Orchomenos are documented Boeotian mints
+        # (British Museum Greek coin catalog). They are retrieval hints, not aliases.
+        # Böotien is used by Gorny & Mosch; CGB's German catalog also uses Böottien.
+        languages = (
+            ('Boeotia', 'en'), ('Boiotia', 'en'), ('Boetia', 'en'),
+            ('Boeotian', 'en'), ('Boiotian', 'en'), ('Boetian', 'en'),
+            ('Böotien', 'de'), ('Böottien', 'de'), ('Béotie', 'fr'),
+            ('Beocia', 'es'), ('Beozia', 'it'),
+        )
+        hints = {
+            'en': ('ancient coins for sale', 'silver stater', 'Thebes coin',
+                   'silver hemidrachm', 'Tanagra coin', 'silver obol', 'Thespiae coin',
+                   'bronze coin', 'Orchomenos coin', 'coin catalog'),
+            'de': ('antike Münzen Festpreis', 'Stater Silber', 'Theben Münze',
+                   'Hemidrachme Silber', 'Tanagra Münze', 'Obol Silber', 'Thespiai Münze',
+                   'Bronzemünze', 'Orchomenos Münze', 'Münzkatalog'),
+            'fr': ('monnaies antiques', 'statère argent', 'Thèbes monnaie',
+                   'hémidrachme argent', 'Tanagra monnaie', 'obole argent', 'Thespies monnaie',
+                   'monnaie bronze', 'Orchomène monnaie', 'catalogue numismatique'),
+            'es': ('monedas antiguas', 'estátera plata', 'Tebas moneda',
+                   'hemidracma plata', 'Tanagra moneda', 'óbolo plata', 'Tespias moneda',
+                   'moneda bronce', 'Orcómeno moneda', 'catálogo numismático'),
+            'it': ('monete antiche', 'statere argento', 'Tebe moneta',
+                   'emidracma argento', 'Tanagra moneta', 'obolo argento', 'Tespie moneta',
+                   'moneta bronzo', 'Orcomeno moneta', 'catalogo numismatico'),
+        }
+        stock_hints = {
+            'en': ('numismatic dealer inventory', 'coin shop stock', 'new coin arrivals', 'fixed price coin list'),
+            'de': ('Münzhändler Lagerbestand', 'Münzen Onlineshop', 'Münzen Neuheiten', 'Festpreisliste Münzen'),
+            'fr': ('stock marchand numismatique', 'boutique monnaies', 'nouvelles monnaies', 'liste monnaies prix fixe'),
+            'es': ('inventario comerciante numismático', 'tienda monedas', 'novedades monedas', 'lista monedas precio fijo'),
+            'it': ('disponibilità commerciante numismatico', 'negozio monete', 'nuovi arrivi monete', 'listino monete prezzo fisso'),
+        }
+        intent = {'en': 'for sale', 'de': 'kaufen', 'fr': 'acheter', 'es': 'comprar', 'it': 'acquistare'}
+        disabled_angles = set()
+        if search['coin_type']:
+            disabled_angles.update((1, 3, 5, 7))
+        if search['mint']:
+            disabled_angles.update((2, 4, 6, 8))
+        cores = _query_cores(scoped, tuple(spelling for spelling, _ in languages))
+        candidates = []
+        for round_number in range(14):
+            for index, (core, (_, language)) in enumerate(zip(cores, languages)):
+                angle = (round_number + index) % 10
+                if round_number < 10:
+                    if angle in disabled_angles:
+                        continue
+                    hint = hints[language][angle]
+                else:
+                    hint = stock_hints[language][round_number - 10]
+                if intent[language] not in hint:
+                    hint += ' ' + intent[language]
+                candidates.append(f'{core} {hint}{excluded}')
+    exclusions = _term_specs(search['exclude_terms'])
+    queries = []
+    for query in candidates:
+        positive = query[:-len(excluded)] if excluded else query
+        literal, concepts = f' {normalize(positive)} ', f' {_concepts(positive)} '
+        if any(_contains(spec, literal, concepts) for spec in exclusions):
+            continue
+        # Preserve the collector's complete criteria even near the provider limit.
+        if len(query) <= 1000 and query not in queries:
+            queries.append(query)
+        if len(queries) == count:
+            break
     return queries

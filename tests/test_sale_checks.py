@@ -340,3 +340,102 @@ def test_old_coins_lots_postcards_and_banknotes_are_not_ancient_single_coins(tit
 def test_explicit_ancient_periods_remain_supported_in_multiple_languages(title):
     html = product_html(title=title, schema=product_schema(name=title))
     assert verify_sale({'url': URL}, Fetcher(html))['sale_status'] == 'available'
+
+
+@pytest.mark.parametrize('title', [
+    'c.338-300 BC Boeotia (Federal) AE 13 Shield / Trident NGC VF',
+    'Boeotia Federal Coinage: Ae: Demeter / Poseidon',
+    'Æ Boeotia. Federal Coinage 230-220 BC',
+    'BÉOTIE – THÈBES Statère SUP',
+])
+def test_numismatic_bronze_shorthand_and_accented_stater_titles_are_supported(title):
+    assert verify_sale({'url': URL}, Fetcher(product_html(title=title)))['sale_status'] == 'available'
+
+
+@pytest.mark.parametrize('title', [
+    'AE 13 electronic component', 'Modern AE 13 token', 'Boeotia bronze helmet',
+    'The Ancient Boeotians and the Coinage of Boeotia', 'Boeotia Federal Coinage catalogue',
+    'Replica Boeotia Federal Coinage AE', 'Lot of Boeotia AE 13 coins 338 BC',
+    'Béotie Statère modern reproduction',
+])
+def test_bronze_shorthand_does_not_admit_unrelated_goods_books_or_replicas(title):
+    assert verify_sale({'url': URL}, Fetcher(product_html(title=title)))['sale_status'] != 'available'
+
+
+def chula_vista_evidence(*, stock='InStock', specification=None, button='<button>Add to cart</button>', offer_fields=None):
+    # Compact evidence observed on the public WooCommerce product page, 2026-09-28.
+    title = 'c.338-300 BC Boeotia (Federal) AE 13 Shield / Trident NGC VF'
+    offer = {'@type': 'Offer', 'url': URL, 'availability': 'https://schema.org/'+stock,
+             'priceSpecification': specification if specification is not None else [
+                 {'@type': 'UnitPriceSpecification', 'price': '124.99', 'priceCurrency': 'USD'}]}
+    offer.update(offer_fields or {})
+    schema = product_schema(name=title, offers=[offer])
+    return product_html(title=title, stock='', price='<p class="price">$124.99</p>', schema=schema, button=button)
+
+
+def test_chula_vista_boeotia_ae13_uses_primary_offer_unit_price_currency():
+    result = verify_sale({'url': URL}, Fetcher(chula_vista_evidence()))
+    assert result['sale_status'] == 'available'
+    assert (result['price'], result['currency']) == ('124.99', 'USD')
+
+
+@pytest.mark.parametrize('stock,button', [('OutOfStock', '<button>Add to cart</button>'), ('InStock', '<button disabled>Add to cart</button>')])
+def test_unit_price_specification_never_overrides_stock_or_disabled_purchase(stock, button):
+    assert verify_sale({'url': URL}, Fetcher(chula_vista_evidence(stock=stock, button=button)))['sale_status'] != 'available'
+
+
+@pytest.mark.parametrize('specification', [
+    [{'@type': 'UnitPriceSpecification', 'price': '125', 'priceCurrency': 'USD'},
+     {'@type': 'UnitPriceSpecification', 'price': '100', 'priceCurrency': 'USD'}],
+    {'@type': 'UnitPriceSpecification', 'minPrice': '125', 'priceCurrency': 'USD'},
+    {'@type': 'UnitPriceSpecification', 'price': '125', 'priceCurrency': 'USD', 'referenceQuantity': {'value': 1, 'unitCode': 'GRM'}},
+    {'@type': 'UnitPriceSpecification', 'price': '125', 'priceCurrency': 'USD', 'priceType': 'https://schema.org/ListPrice'},
+])
+def test_ambiguous_tiered_or_per_weight_specifications_do_not_supply_currency(specification):
+    assert verify_sale({'url': URL}, Fetcher(chula_vista_evidence(specification=specification)))['sale_status'] != 'available'
+
+
+@pytest.mark.parametrize('offer_fields', [
+    {'price': 'nonsense'}, {'price': '0'}, {'price': '999.00'}, {'price': ''},
+    {'price': None}, {'priceCurrency': ''},
+])
+def test_supplied_parent_offer_fields_cannot_be_replaced_by_unit_price_fallback(offer_fields):
+    assert verify_sale({'url': URL}, Fetcher(chula_vista_evidence(offer_fields=offer_fields)))['sale_status'] != 'available'
+
+
+def test_accented_french_stater_remains_hidden_when_offer_is_out_of_stock():
+    title = 'BÉOTIE – THÈBES Statère SUP'
+    schema = product_schema(name=title)
+    schema['offers']['availability'] = 'https://schema.org/OutOfStock'
+    result = verify_sale({'url': URL}, Fetcher(product_html(title=title, schema=schema)))
+    assert result['sale_status'] == 'rejected'
+    assert result['sale_reason'] == 'The product offer is not marked in stock.'
+
+
+def test_identical_responsive_headings_share_one_primary_product_identity():
+    # Holmasto repeats the same product title in mobile-header and desktop-summary blocks.
+    title = 'Tanagra, Boiotia. Oboli, 300-luku eKr. Ex BCD'
+    schema = product_schema(name=title)
+    schema['offers'].update(price='85.00', priceCurrency='EUR')
+    html = '<script type="application/ld+json">'+json.dumps(schema)+'</script>'
+    html += f'''<main><div class="product product-page instock" id="product-878172">
+      <div class="product-page__mobile-header"><h1 class="product_title">{title}</h1></div>
+      <div class="summary entry-summary"><h1 class="product_title">{title}</h1>
+      <span class="price">85,00 €</span><button name="add-to-cart" value="60083">Add to cart</button></div>
+    </div></main>'''
+    result = verify_sale({'url': URL}, Fetcher(html))
+    assert result['sale_status'] == 'available'
+    assert (result['title'], result['price'], result['currency']) == (title, '85.00', 'EUR')
+    assert verify_sale({'url': URL}, Fetcher(html.replace('instock', 'outofstock')))['sale_status'] == 'rejected'
+
+
+@pytest.mark.parametrize('case', ['different_titles', 'separate_products', 'no_schema', 'foreign_schema'])
+def test_extra_headings_cannot_merge_separate_or_unidentified_products(case):
+    schema = product_schema()
+    if case == 'foreign_schema': schema['url'] = URL+'/different'
+    if case == 'no_schema': schema = None
+    extra = f'<h1>{TITLE if case != "different_titles" else "Greek Corinth AR stater 400 BC"}</h1>'
+    if case == 'separate_products':
+        extra = '<div class="product">'+extra+'<span class="price">£999</span><p class="stock">In stock</p><button>Add to cart</button></div>'
+    html = product_html(schema=schema, extra=extra)
+    assert verify_sale({'url': URL}, Fetcher(html))['sale_status'] != 'available'

@@ -437,3 +437,122 @@ def test_daily_web_query_anchors_boeotia_without_dropping_other_terms_or_exclusi
     assert web_query_variants(search, 1) == [search['web_query']]
     literal = db.get_search(db.save_search(dict(keywords='"Boetia AR"', category='Greek')))
     assert literal['web_query'] == '"Boetia AR" Greek ancient coins buy fixed price'
+
+
+def test_deep_boeotia_queries_explore_coin_types_mints_and_catalogs_without_changing_standard():
+    from coinwatch.searches import deep_web_query_variants, validate_search, web_query_variants
+    search = validate_search(dict(keywords='Boiotian, Boetia', category='Greek'))
+    standard = web_query_variants(search, 50)
+    queries = deep_web_query_variants(search, 50)
+    assert len(queries) == len(set(queries)) == 50
+    assert queries[0] == '"Boeotia" ancient coins for sale'
+    assert deep_web_query_variants(search, 1) == [queries[0]]
+    assert all(len(query) <= 1000 and 'Greek' not in query for query in queries)
+    first_thirty = ' '.join(queries[:30]).casefold()
+    for angle in ('stater', 'hemidrachm', 'obol', 'bronze', 'thebes', 'tanagra', 'thespiae', 'orchomenos', 'catalog'):
+        assert angle in first_thirty
+    assert any('"Böotien"' in query and 'Münz' in query for query in queries)
+    assert any('"Béotie"' in query and 'monnaie' in query for query in queries)
+    assert any('"Beocia"' in query and 'moneda' in query for query in queries)
+    assert any('"Beozia"' in query and 'monet' in query for query in queries)
+    assert search['category'] == 'Greek'
+    assert web_query_variants(search, 50) == standard
+
+
+def test_deep_queries_keep_explicit_criteria_quotes_and_exclusions():
+    from coinwatch.searches import deep_web_query_variants, validate_search
+    search = validate_search(dict(keywords='Boeotia "silver owl"', coin_type='hemidrachm', mint='Thespiae',
+                                  ruler='Zeus', category='Greek "Greek" archaic', exclude_terms='plated "modern copy"'))
+    queries = deep_web_query_variants(search, 50)
+    assert queries
+    for query in queries:
+        for term in ('"silver owl"', 'hemidrachm', 'Thespiae', 'Zeus', '"Greek"', 'archaic', '-plated', '-"modern copy"'):
+            assert term in query
+        assert ' Greek ' not in query
+        assert len(query) <= 1000
+
+
+@pytest.mark.parametrize('values', [dict(mint='Tanagra'), dict(coin_type='obol'), dict(mint='Tanagra', coin_type='obol')])
+def test_deep_queries_do_not_add_conflicting_explicit_mint_or_denomination_hints(values):
+    from coinwatch.searches import deep_web_query_variants, normalize, validate_search
+    queries = deep_web_query_variants(validate_search(dict(keywords='Boeotia', category='Greek', **values)), 50)
+    assert len(queries) == len(set(queries)) == 50
+    for query in queries:
+        words = normalize(query).split()
+        if values.get('mint'):
+            assert 'Tanagra' in query
+            assert not set(words).intersection({'thebes', 'theben', 'tebas', 'tebe', 'thespiae', 'thespiai',
+                                                'thespies', 'tespias', 'tespie', 'orchomenos', 'orchomene', 'orcomeno'})
+        if values.get('coin_type'):
+            assert 'obol' in words
+            assert not set(words).intersection({'stater', 'statere', 'statera', 'estatera', 'statere', 'hemidrachm',
+                                                'hemidrachme', 'hemidracma', 'emidracma', 'bronze', 'bronzemunze', 'bronce', 'bronzo'})
+
+
+@pytest.mark.parametrize('values', [
+    dict(keywords='"Boetia"', category='Greek'),
+    dict(keywords='"Boetia AR"', category='Greek'),
+    dict(mint='Thebes', category='Greek'),
+    dict(keywords='silver', exclude_terms='Boeotia', category='Greek'),
+])
+def test_deep_queries_do_not_infer_a_region_from_literals_mints_or_exclusions(values):
+    from coinwatch.searches import deep_web_query_variants, validate_search
+    queries = deep_web_query_variants(validate_search(values), 50)
+    assert len(queries) == len(set(queries)) == 50
+    assert all('Greek' in query and '"Boeotia"' not in query and 'Böotien' not in query for query in queries)
+    if values.get('keywords', '').startswith('"'):
+        assert all(values['keywords'] in query for query in queries)
+
+
+def test_deep_queries_preserve_greek_when_it_is_an_explicit_keyword():
+    from coinwatch.searches import deep_web_query_variants, validate_search
+    search = validate_search(dict(keywords='Boeotia Greek', category='Greek'))
+    assert all(' Greek ' in query for query in deep_web_query_variants(search, 50))
+
+
+def test_deep_denomination_mint_and_catalog_angles_keep_localized_purchase_intent():
+    from coinwatch.searches import deep_web_query_variants, validate_search
+    intent = {'Böotien': 'kaufen', 'Böottien': 'kaufen', 'Béotie': 'acheter',
+              'Beocia': 'comprar', 'Beozia': 'acquistare'}
+    for query in deep_web_query_variants(validate_search(dict(keywords='Boeotia', category='Greek')), 50):
+        spelling = query.split('"')[1]
+        assert intent.get(spelling, 'for sale') in query
+
+
+@pytest.mark.parametrize(('exclusion', 'positive'), [('stater', 'stater'), ('Thebes', 'Thebes'), ('"silver stater"', 'silver stater')])
+def test_deep_query_hints_do_not_contradict_collector_exclusions(exclusion, positive):
+    from coinwatch.searches import deep_web_query_variants, normalize, validate_search
+    queries = deep_web_query_variants(validate_search(dict(keywords='Boeotia', category='Greek', exclude_terms=exclusion)), 50)
+    assert len(queries) == len(set(queries)) == 50
+    for query in queries:
+        assert query.endswith(' -' + exclusion)
+        included = query[:-len(' -' + exclusion)]
+        assert f' {normalize(positive)} ' not in f' {normalize(included)} '
+
+
+@pytest.mark.parametrize('count', [0, 51, -1, True, 2.5, '10'])
+def test_invalid_deep_query_budget_rejected(count):
+    from coinwatch.searches import deep_web_query_variants, validate_search
+    with pytest.raises(ValueError):
+        deep_web_query_variants(validate_search(dict(keywords='Boeotia')), count)
+
+
+def test_deep_queries_never_truncate_long_collector_criteria():
+    from coinwatch.searches import deep_web_query_variants, validate_search
+    search = validate_search(dict(keywords='Boeotia ' + 'a' * 470, mint='b' * 190,
+                                  ruler='c' * 190, category='Greek ' + 'd' * 80))
+    queries = deep_web_query_variants(search, 50)
+    assert queries
+    assert all(len(query) <= 1000 and 'a' * 470 in query and 'd' * 80 in query for query in queries)
+
+
+@pytest.mark.parametrize('spelling', ['Böotien', 'Böottien'])
+def test_documented_german_region_spellings_match_without_inventing_mint_equivalence(spelling):
+    from coinwatch.searches import matcher, validate_search, web_matcher
+    search = validate_search(dict(keywords='Boiotian, Boetia', category='Greek', currency='EUR', max_price='350'))
+    row = dict(title=f'{spelling} Thespiai Obole', currency='EUR', price='350')
+    assert web_matcher(search)(row)
+    assert matcher(search)(row['title'], 'Greek', 'EUR', '350')
+    assert not web_matcher(search)({**row, 'price': '351'})
+    assert not web_matcher(search)({**row, 'title': 'Greek Thebes stater'})
+    assert not web_matcher(validate_search(dict(keywords='"Boetia"')))({**row, 'price': '100'})

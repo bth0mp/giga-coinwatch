@@ -3,6 +3,7 @@ import json
 import re
 import socket
 import ssl
+import unicodedata
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
@@ -31,8 +32,20 @@ _CURRENCIES = {'USD', 'GBP', 'EUR', 'CAD', 'AUD', 'NZD', 'CHF', 'JPY', 'CNY', 'H
 
 def individual_ancient_coin_title(title: str) -> bool:
     """Conservative title-only classification; this does not establish a live sale."""
-    return isinstance(title, str) and bool(
-        not _EXCLUDED.search(title) and _COIN.search(title) and _ANCIENT.search(title))
+    if not isinstance(title, str):
+        return False
+    plain = ''.join(char for char in unicodedata.normalize('NFKD', title)
+                    if not unicodedata.combining(char)).replace('Æ', 'AE').replace('æ', 'ae')
+    if _EXCLUDED.search(title) or _EXCLUDED.search(plain):
+        return False
+    # AE 13 is a coin's bronze/diameter shorthand, not the generic word "bronze".
+    numbered_bronze = re.search(r'\bAE[\s-]?\d{1,2}(?:\.\d+)?\b', plain, re.I)
+    boeotia = re.search(r'\b(?:boeotia|boiotia|boetia|boeotian|boiotian|boetian|beotie|beocia|beozia)\b', plain, re.I)
+    federal_bronze = (boeotia and re.search(r'\bfederal\s+coinage\b', plain, re.I)
+                      and re.search(r'\b(?:ae|bronze)\b', plain, re.I))
+    coin = _COIN.search(title) or _COIN.search(plain) or numbered_bronze or federal_bronze
+    ancient = _ANCIENT.search(title) or _ANCIENT.search(plain) or federal_bronze or (boeotia and numbered_bronze)
+    return bool(coin and ancient)
 
 
 def _text(node):
@@ -220,6 +233,18 @@ def _check_page(result, page):
     for node in soup.select(_RELATED + ', script, style'):
         node.decompose()
     headings = [node for node in soup.select('h1') if _visible(node)]
+    if len(headings) > 1:
+        # Responsive layouts may repeat one title, but separate products cannot share evidence.
+        primary_scope, explicit = _product_scope(headings[0])
+        heading_title = _text(headings[0])
+        primary_nodes = [node for node in nodes if 'Product' in _types(node)
+                         and _name(node.get('name', '')) == _name(heading_title)
+                         and isinstance(node.get('url') or node.get('@id'), str)
+                         and _identity(urljoin(page.url, node.get('url') or node['@id'])) == _identity(page.url)]
+        if (explicit and len(primary_nodes) == 1
+                and all(_text(heading) == heading_title and _product_scope(heading)[0] is primary_scope
+                        for heading in headings)):
+            headings = headings[:1]
     if len(headings) != 1:
         return 'unverified', 'A single primary product could not be identified.', '', '', ''
     title = _text(headings[0])[:500]
@@ -277,6 +302,17 @@ def _check_page(result, page):
             structured_stock = availability
             structured_price = _amount(offers.get('price', ''), structured=True)
             structured_currency = str(offers.get('priceCurrency', '')).upper()
+            # Current WooCommerce offers can put both fields in one plain unit price.
+            # Never combine conflicting parent/specification fields or use tier/weight prices.
+            if 'price' not in offers and 'priceCurrency' not in offers:
+                specification = offers.get('priceSpecification', {})
+                if isinstance(specification, list):
+                    specification = specification[0] if len(specification) == 1 else {}
+                if (isinstance(specification, dict)
+                        and _types(specification).intersection({'UnitPriceSpecification', 'PriceSpecification'})
+                        and not any(key in specification for key in ('referenceQuantity', 'unitCode', 'unitText', 'priceType', 'minPrice', 'maxPrice', 'billingDuration', 'billingIncrement'))):
+                    structured_price = _amount(specification.get('price', ''), structured=True)
+                    structured_currency = str(specification.get('priceCurrency', '')).upper()
     if not _purchase(scope, page.url):
         return 'unverified', 'No enabled fixed-price purchase control was found for this product.', '', '', ''
     if not (structured_stock == 'InStock' or _IN_STOCK.search(stock_text)):

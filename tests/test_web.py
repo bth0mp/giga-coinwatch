@@ -378,8 +378,11 @@ def test_search_depth_controls_preserve_existing_query_and_time_defaults(tmp_pat
         assert depth.select_one('option[selected]')['value'] == 'basic'
         assert document.select_one('input[name="web_queries"]')['value'] == '5'
         assert document.select_one('input[name="web_minutes"]')['value'] == '10'
-        assert '20 catalog pages' in document.get_text(' ', strip=True)
-        assert '100 extra product pages' in document.get_text(' ', strip=True)
+        assert '80 catalog pages' in document.get_text(' ', strip=True)
+        assert '20 per dealer' in document.get_text(' ', strip=True)
+        assert '200 extra product links' in document.get_text(' ', strip=True)
+        assert 'worldwide searches with targeted dealer groups' in document.get_text(' ', strip=True)
+        assert 'Daily scans use Standard with one web query per search.' in document.get_text(' ', strip=True)
     for endpoint in ('/search/scan', f'/wanted/{search_id}/scan'):
         response = client.post(endpoint, data={**token(db), 'search_id': search_id,
                                               'web_queries': '17', 'web_minutes': '30', 'web_depth': 'advanced'})
@@ -404,6 +407,8 @@ def test_search_detail_shows_active_run_budgets_only_for_that_search(tmp_path):
     assert document.select_one('input[name="web_minutes"]')['value'] == '60'
     assert document.select_one('select[name="web_depth"] option[selected]')['value'] == 'advanced'
     assert 'Active run: Deep' in document.get_text(' ', strip=True)
+    estimate = document.select_one('[data-web-query-estimate]').get_text(' ', strip=True)
+    assert '60 Tavily credits' in estimate and '200 extra product links' in estimate
     other = BeautifulSoup(client.get(f'/wanted/{other_id}').text, 'html.parser')
     assert other.select_one('input[name="web_queries"]')['value'] == '5'
     assert other.select_one('input[name="web_minutes"]')['value'] == '10'

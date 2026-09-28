@@ -121,3 +121,45 @@ def test_same_dealer_uses_only_www_equivalence_and_matching_effective_port():
     assert not same_dealer(BASE,'https://shop.dealer.example/products/coin')
     assert not same_dealer(BASE,'https://dealer.example:8443/products/coin')
     assert not same_dealer(BASE,'https://user:pass@dealer.example/products/coin')
+
+
+def test_merconis_short_mint_title_is_a_lead_under_an_explicit_ancient_catalog():
+    url = 'https://petasoscoins.com/en/greek.html'
+    html = '''<title>Ancient Greek Coins - Petasos Coins</title><base href="https://petasoscoins.com/">
+    <main><div class="shopProduct template_productOverview">
+      <div class="currentPrice">40,00 €</div><input type="submit" value="Add to cart">
+      <a href="en/quickview-57/product/boeotia-thebes-shield-trident.html" title="Quickview: Boeotia, Thebes; shield/trident"><img alt=""></a>
+      <h2><a class="productTitle" href="en/greek/product/boeotia-thebes-shield-trident.html#p_12237-0">Boeotia, Thebes; shield/trident</a></h2>
+    </div><div class="pagination block"><a href="en/greek.html?page_standard=2">2</a>
+    <a href="en/greek.html?page_standard=8">Last</a></div></main>'''
+    found = catalog_links(page(html, url), SEARCH)
+    assert found == {'products': [{'url': 'https://petasoscoins.com/en/greek/product/boeotia-thebes-shield-trident.html',
+                                   'title': 'Boeotia, Thebes; shield/trident', 'snippet': ''}],
+                     'next_pages': [url+'?page_standard=2']}
+    assert is_catalog_url(url) and is_catalog_url(url+'?page_standard=2')
+
+
+def test_short_mint_title_needs_explicit_catalog_context_and_keeps_exclusions():
+    short = card(title='Boeotia, Thebes; shield/trident')
+    assert not catalog_links(page(short), SEARCH)['products']
+    for title in ('Boeotia book', 'Boeotia replica', 'Boeotia token'):
+        assert not catalog_links(page('<title>Ancient Greek Coins</title>'+card(title=title)), SEARCH)['products']
+
+
+def test_foreign_base_cannot_rewrite_relative_product_links():
+    html = '<title>Ancient Greek Coins</title><base href="https://other.example/">'+card()
+    assert catalog_links(page(html), SEARCH) == {'products': [], 'next_pages': []}
+
+
+def test_primary_card_heading_is_used_without_price_or_action_text():
+    html = '''<li class="product"><a href="/products/boetia"><span class="price">1995 €</span>
+    <h2 class="woocommerce-loop-product__title">Boetia AR stater</h2></a></li>'''
+    assert catalog_links(page(html), SEARCH)['products'] == [
+        {'url': 'https://dealer.example/products/boetia', 'title': 'Boetia AR stater', 'snippet': ''}]
+
+
+@pytest.mark.parametrize('status', ['class="product outofstock"', 'class="product product-archive"'])
+def test_explicit_sold_archive_cards_do_not_spend_product_checks_but_allow_pagination(status):
+    html = f'<article {status}><h3><a href="/products/boetia">{TITLE}</a></h3><span class="price">130€</span><strong class="product-archive-label">VENDU</strong></article>'
+    html += '<nav class="pagination"><a href="?page=2">Next</a></nav>'
+    assert catalog_links(page(html), SEARCH) == {'products': [], 'next_pages': [BASE+'?page=2']}
