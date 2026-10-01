@@ -96,6 +96,11 @@ a.button { display: inline-block; text-decoration: none; }
 .web-lead h3 { margin-bottom: 8px; font-size: 18px; font-weight: 600; }
 .web-lead p { margin-bottom: 7px; }
 .web-lead .muted { font-size: 12px; }
+.finding-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-bottom: 10px; }
+.verification-label { display: inline-block; padding: 3px 8px; border: 1px solid currentColor; color: var(--slate-deep); font-size: 13px; font-weight: 600; }
+.verification-unverified, .verification-expired { color: var(--bronze-deep); }
+.view-tabs.findings-tabs { flex-wrap: wrap; gap: 4px 24px; }
+.findings-tabs a { min-height: 44px; }
 .utility-row { min-height: 49px; display: flex; justify-content: space-between; align-items: center; gap: 16px; color: var(--muted); font-size: 13px; border-bottom: 1px solid #dce3e6; }
 .utility-row p { margin: 0; }
 .system-status { display: flex; align-items: center; gap: 8px; color: var(--slate); }

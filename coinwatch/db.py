@@ -284,7 +284,7 @@ class Database:
         # Validate the complete result set before changing the last successful snapshot.
         clean = {}
         if results is not None or error is None:
-            for result in (results or [])[:1000]:
+            for result in results or []:
                 url = public_url_shape(result['url'])
                 parts = urlsplit(url)
                 params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
@@ -334,7 +334,7 @@ class Database:
                         combined.setdefault(url, tuple(row[key] for key in ('title', 'snippet', 'first_seen', 'last_seen',
                                                                             'sale_status', 'price', 'currency', 'sale_checked_at', 'sale_reason')))
                 c.execute('DELETE FROM search_web_results WHERE search_id=?', (search_id,))
-                for position, (url, values) in enumerate(list(combined.items())[:1000]):
+                for position, (url, values) in enumerate(combined.items()):
                     c.execute('INSERT INTO search_web_results(search_id,url,title,snippet,first_seen,last_seen,sale_status,price,currency,sale_checked_at,sale_reason,position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
                               (search_id, url, *values, position))
             status = 'complete' if error is None else ('partial' if results is not None else 'error')

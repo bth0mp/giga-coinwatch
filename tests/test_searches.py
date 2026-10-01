@@ -316,13 +316,39 @@ def test_partial_query_batch_keeps_new_and_previous_leads(db):
     assert db.search_results(id)['results'] == result['results']
 
 
-def test_accumulated_leads_cap_retains_latest_batch(db):
+def test_accumulated_leads_keep_previous_candidates_beyond_one_thousand(db):
     id = db.save_search({'keywords': 'owl'})
     db.record_web_search(id, [dict(url=f'https://old.example/{i}', title='Old') for i in range(1000)], merge=True)
+    previous = db.search_results(id)['results']
     db.record_web_search(id, [dict(url=f'https://new.example/{i}', title='New') for i in range(20)], merge=True)
     result = db.search_results(id)['results']
-    assert len(result) == 1000
+    assert len(result) == 1020
     assert all(r['title'] == 'New' for r in result[:20])
+    assert [r['url'] for r in result[20:]] == [r['url'] for r in previous]
+    assert [r['first_seen'] for r in result[20:]] == [r['first_seen'] for r in previous]
+    assert [r['last_seen'] for r in result[20:]] == [r['last_seen'] for r in previous]
+
+
+def test_large_web_result_batch_keeps_every_candidate_and_can_be_replaced(db):
+    id = db.save_search({'keywords': 'owl'})
+    leads = [dict(url=f'https://shop.example/{i}', title=f'Owl {i}') for i in range(1200)]
+    db.record_web_search(id, leads)
+    result = db.search_results(id)['results']
+    assert len(result) == 1200
+    assert result[-1]['url'] == 'https://shop.example/1199'
+    db.record_web_search(id, [dict(url='https://shop.example/replacement', title='Replacement')])
+    assert [r['url'] for r in db.search_results(id)['results']] == ['https://shop.example/replacement']
+
+
+def test_invalid_result_beyond_one_thousand_preserves_previous_snapshot(db):
+    id = db.save_search({'keywords': 'owl'})
+    db.record_web_search(id, [dict(url='https://shop.example/previous', title='Previous')])
+    previous = db.search_results(id)
+    leads = [dict(url=f'https://shop.example/{i}', title=f'Owl {i}') for i in range(1200)]
+    leads[-1]['sale_status'] = 'invalid'
+    with pytest.raises(ValueError, match='Invalid web sale status'):
+        db.record_web_search(id, leads, merge=True)
+    assert db.search_results(id) == previous
 
 
 @pytest.mark.parametrize('title', [

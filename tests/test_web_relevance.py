@@ -47,8 +47,8 @@ def test_hidden_results_summary_distinguishes_criteria_expiry_and_failed_checks(
     assert summary[('Unverified', 'Seller refused automated access (HTTP 403).')] == 1
     response = TestClient(create_app(db, Runtime(db))).get(f'/wanted/{watch}')
     assert response.status_code == 200
-    assert 'Why results are hidden' in response.text
-    assert 'Across all 7 stored candidate links' in response.text
+    assert 'Why listings are not verified' in response.text
+    assert 'Latest check outcomes across 7 stored links' in response.text
     assert 'Seller refused automated access (HTTP 403).' in response.text
     assert '&lt;script&gt;bad()&lt;/script&gt;' in response.text
     assert '<script>bad()</script>' not in response.text

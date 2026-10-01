@@ -178,7 +178,7 @@ def test_wanted_search_create_edit_match_and_scan(tmp_path):
     assert detail.status_code == 200
     assert "Denarius &lt;script&gt;alert(1)&lt;/script&gt;" in detail.text
     assert "Old coin" not in detail.text
-    assert "For sale on wider web" in detail.text
+    assert "Coin findings on the wider web" in detail.text
     assert "My denarii" in client.get("/wanted").text
     response = client.post(f"/wanted/{search['id']}/scan", data=token(db))
     assert response.status_code == 303
@@ -461,4 +461,4 @@ def test_for_sale_template_hides_old_unchecked_results_during_runtime_upgrade(tm
     assert response.status_code == 200
     assert "Old unchecked lead" not in response.text
     assert "Sold owl" not in response.text
-    assert "No verified for-sale listings yet" in response.text
+    assert "No potential listings in this view" in response.text

@@ -1,14 +1,48 @@
 """One process scheduler, with durable per-day occurrence bookkeeping."""
 import logging
+import re
 import threading
 from collections import Counter
 from datetime import datetime, time, timedelta, timezone
-from urllib.parse import urlsplit
+from decimal import Decimal, InvalidOperation
+from urllib.parse import unquote, urlsplit
 from zoneinfo import ZoneInfo
 
 from .scanner import Scanner, get_scan_search, normalize_scan_mode, validate_web_minutes, validate_web_queries, validate_web_depth
 
 log = logging.getLogger(__name__)
+
+# Retained search-engine leads can describe museum pieces, images, replicas, or
+# auction lots even when their titles look like individual coins.
+_NON_LISTING_HOSTS = ('one.bid', 'onebid.pl', 'bidinside.com', 'drouot.com', 'academia.edu',
+                      'picryl.com', 'alamy.com', 'artic.edu', 'superstock.com',
+                      'museumsvictoria.com.au', 'numisforums.com', 'coincommunity.com',
+                      'worthpoint.com', 'album-online.com', 'coinreplicas.com', 'picclick.com')
+_NON_LISTING_PATH = re.compile(r'/(?:lots?|forums?|topics?|artworks|stock-photo|greek-coins-by-area|search)(?:/|\.|$)', re.I)
+_NON_LISTING_TITLE = re.compile(r'\b(?:pdf|pendant|jewelry|jewellery|stock photo(?:graphy)?|public domain image|'
+                                r'coins? reference|online auction|online bidding|internet\s*auktion|enchères)\b', re.I)
+_NEGATIVE_SNIPPET = re.compile(r'\b(?:out[ -]of[ -]stock|sold out)\b|'
+                               r'(?:^|[.!|;]\s*)(?:sold|vendu|vendido|esaurito|ausverkauft)(?=\s*(?:[.!|;]|$))|'
+                               r'\bsold\s+for\s+(?:[£€$]|\d)|'
+                               r'\b(?:replica|reproduction)\s+coin\b', re.I)
+
+
+def _potential_listing_url(url):
+    from .catalog_links import _safe_url, is_catalog_url
+    if not _safe_url(url, url) or is_catalog_url(url):
+        return False
+    parts = urlsplit(url)
+    host = parts.hostname.lower().removeprefix('www.')
+    path = unquote(parts.path)
+    if (any(host == domain or host.endswith('.' + domain) for domain in _NON_LISTING_HOSTS)
+            or host.startswith(('auction.', 'auctions.')) or _NON_LISTING_PATH.search(path)):
+        return False
+    if (host == 'todocoleccion.net' or host.endswith('.todocoleccion.net')) and path.startswith('/s/'):
+        return False
+    # This dealer's product links end in .html; bare numbered pages are categories.
+    if host == 'issoire-philatelie.com' and re.fullmatch(r'/\d+-[^/.]+/?', path):
+        return False
+    return True
 
 
 def _web_result_key(url):
@@ -67,7 +101,7 @@ class Runtime:
         return state
 
     def search_results(self, search_id):
-        from .sale_checks import individual_ancient_coin_title
+        from .sale_checks import _NEGATIVE, individual_ancient_coin_title
         from .searches import web_matcher
         from .web_search import WebSearchError, load_api_key
         search = self.db.get_search(search_id)
@@ -77,7 +111,8 @@ class Runtime:
         latest = {}
         def check_order(row):
             # UTC ISO timestamps sort chronologically; empty pending checks sort first.
-            return row['sale_checked_at'] or '', row['sale_status'] != 'available'
+            # A known rejection wins ties because stored check times round to seconds.
+            return row['sale_checked_at'] or '', {'available': 0, 'unverified': 1, 'rejected': 2}[row['sale_status']]
         for row in retained:
             key = _web_result_key(row['url'])
             if key not in latest or check_order(row) > check_order(latest[key]):
@@ -88,6 +123,50 @@ class Runtime:
                              and cutoff <= row['sale_checked_at'] <= now.isoformat(timespec='seconds')
                              and individual_ancient_coin_title(row['title']) and matches(row)]
         visible_urls = {row['url'] for row in result['results']}
+        # Potential listings retain title criteria without requiring a confirmed price.
+        # This is presentation only: stored checks and the verified contract stay intact.
+        title_matches = web_matcher({**search, 'currency': '', 'max_price': ''})
+        ceiling = Decimal(search['max_price']) if search['max_price'] else None
+        potential = []
+        for row in latest.values():
+            if (row['sale_status'] not in ('available', 'unverified')
+                    or not individual_ancient_coin_title(row['title'])
+                    or _NEGATIVE.search(row['title']) or not title_matches(row)
+                    or _NON_LISTING_TITLE.search(row['title']) or not _potential_listing_url(row['url'])):
+                continue
+            # Explicit negative claims can rule out a lead, but generic navigation
+            # such as "Sold Items" cannot. Fresh seller verification takes precedence.
+            if row['url'] not in visible_urls and _NEGATIVE_SNIPPET.search(row['snippet']):
+                continue
+            if search['currency'] and row['currency'] and row['currency'] != search['currency']:
+                continue
+            try:
+                price = Decimal(row['price'])
+            except InvalidOperation:
+                price = None
+            if ceiling is not None and price is not None and price.is_finite() and price > ceiling:
+                continue
+            if row['url'] in visible_urls:
+                verification, label = 'verified', 'Verified for sale'
+                note = 'The seller page confirmed availability and a fixed price within the last 24 hours.'
+                price_label = 'Verified price'
+            elif row['sale_status'] == 'available' and row['sale_checked_at'] and row['sale_checked_at'] < cutoff:
+                verification, label = 'expired', 'Needs recheck'
+                note = 'Previously verified; availability and price need a new check.'
+                price_label = 'Last known price'
+            else:
+                verification, label = 'unverified', 'Unverified'
+                note = ((row['sale_reason'] if row['sale_status'] == 'unverified' else '')
+                        or 'Availability and price need a new check.')
+                price_label = 'Price unconfirmed'
+            presented = dict(row, verification=verification, verification_label=label,
+                             verification_note=note, price_label=price_label)
+            if verification == 'unverified':
+                presented.update(price='', currency='')
+            potential.append(presented)
+        result['potential_results'] = potential
+        counts = Counter(row['verification'] for row in potential)
+        result['potential_counts'] = {state: counts[state] for state in ('verified', 'unverified', 'expired')}
         reasons = Counter()
         for row in retained:
             if row['url'] in visible_urls:

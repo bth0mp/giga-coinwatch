@@ -196,18 +196,41 @@ def create_app(db, runtime) -> FastAPI:
         ))
 
     @app.get("/wanted/{search_id}")
-    def wanted_detail(request: Request, search_id: int, page: int = 1):
-        if page < 1:
+    def wanted_detail(request: Request, search_id: int, page: int = 1, web_view: str = 'all', web_page: int = 1):
+        if page < 1 or web_page < 1:
             raise HTTPException(status_code=400, detail="Page must be positive")
+        labels = {'all': 'All potential', 'verified': 'Verified for sale',
+                  'unverified': 'Unverified', 'expired': 'Needs recheck'}
+        if web_view not in labels:
+            raise HTTPException(status_code=400, detail="Choose a valid web result filter")
         search = find_search(search_id)
         rows, total = db.search_matches(search_id, page=page, per_page=30)
         web_results = runtime.search_results(search_id)
-        web_domains = {urlsplit(_safe_url(lead.get("url"))).hostname.removeprefix("www.")
-                       for lead in web_results["results"] if _safe_url(lead.get("url"))}
+        potential = web_results.get('potential_results', [dict(lead, verification='verified',
+            verification_label='Verified for sale', verification_note='') for lead in web_results['results']
+            if lead.get('sale_status') == 'available'])
+        potential = [dict(lead, dealer_domain=urlsplit(_safe_url(lead.get('url'))).hostname.removeprefix('www.'))
+                     for lead in potential if _safe_url(lead.get('url'))
+                     and lead.get('verification') in ('verified', 'unverified', 'expired')]
+        web_counts = {key: sum(lead['verification'] == key for lead in potential) for key in labels if key != 'all'}
+        web_counts['all'] = len(potential)
+        filtered = [lead for lead in potential if web_view == 'all' or lead['verification'] == web_view]
+        web_pages = max(1, (len(filtered) + 29) // 30)
+        web_page = min(web_page, web_pages)
+        def findings_url(view, number):
+            return f'/wanted/{search_id}?' + urlencode(dict(page=page, web_view=view, web_page=number)) + '#web-results-heading'
+        web_tabs = [dict(label=label, count=web_counts[key], selected=web_view == key, href=findings_url(key, 1))
+                    for key, label in labels.items()]
+        web_domains = {lead['dealer_domain'] for lead in potential if lead['verification'] == 'verified'}
         return templates.TemplateResponse(request, "wanted_detail.html", context(
             request, page="wanted", search=search, rows=rows, total=total,
             web_results=web_results, web_domain_count=len(web_domains), current_page=page, has_next=page * 30 < total,
-            prev_url=f"/wanted/{search_id}?page={page - 1}", next_url=f"/wanted/{search_id}?page={page + 1}",
+            web_items=filtered[(web_page - 1) * 30:web_page * 30], web_tabs=web_tabs, web_counts=web_counts,
+            web_view=web_view, web_page=web_page, web_pages=web_pages, web_total=len(filtered),
+            web_first=(web_page - 1) * 30 + 1, web_last=min(web_page * 30, len(filtered)),
+            web_prev_url=findings_url(web_view, web_page - 1), web_next_url=findings_url(web_view, web_page + 1),
+            prev_url=f"/wanted/{search_id}?" + urlencode(dict(page=page-1, web_view=web_view, web_page=web_page)),
+            next_url=f"/wanted/{search_id}?" + urlencode(dict(page=page+1, web_view=web_view, web_page=web_page)),
             return_to=request.url.path + ("?" + request.url.query if request.url.query else ""),
         ))
 

@@ -1,7 +1,6 @@
 {% extends "base.html" %}
 {% block title %}{{ search.name }}{% endblock %}
 {% block content %}
-{% set visible_sales = web_results.results|selectattr('sale_status', 'defined')|selectattr('sale_status', 'equalto', 'available')|list %}
 {% set active_scan = runtime.running and runtime.search_id == search.id %}
 {% set scan_queries = runtime.web_queries if active_scan else 5 %}
 {% set scan_minutes = runtime.web_minutes if active_scan else 10 %}
@@ -24,23 +23,40 @@
   {% if rows %}{% include "coin_results.html" %}{% else %}<div class="empty-state"><h3>No available matches yet</h3><p>Try fewer keywords, increase your price limit, or scan monitored dealers for new stock.</p></div>{% endif %}
 </section>
 <section class="web-search-section" aria-labelledby="web-results-heading">
-  <div class="section-heading-row"><h2 id="web-results-heading">For sale on wider web</h2>{% if search.web_url|safe_url %}<a class="text-link" href="{{ search.web_url|safe_url }}" target="_blank" rel="noopener noreferrer">Open web search</a>{% endif %}</div>
-  <p class="muted">Search the indexed public web worldwide, including shops you haven’t added. Each query returns up to 20 candidate links for sale checks; no scan covers every website.</p>
-  <p class="muted">Only individual fixed-price coin listings matching your saved criteria, with a price and evidence they were available to buy at the last check, appear here. Auctions, sold coins, information pages and listings we cannot verify are hidden.</p>
-  <p class="muted">Availability checks older than 24 hours are hidden until a later scan rechecks them. Availability can change after a check.</p>
+  <div class="section-heading-row"><h2 id="web-results-heading">Coin findings on the wider web</h2>{% if search.web_url|safe_url %}<a class="text-link" href="{{ search.web_url|safe_url }}" target="_blank" rel="noopener noreferrer">Open web search</a>{% endif %}</div>
+  <p class="muted">Browse all potential coin listings found for this search, including leads the app could not verify. Information pages, known sold items and obvious auction results are excluded. Duplicate URLs are combined.</p>
+  <p class="muted">Only <strong>Verified for sale</strong> listings have a confirmed price and availability check from the past 24 hours. Unverified leads need checking on the seller’s website. Older verified offers are marked <strong>Needs recheck</strong>.</p>
+  <nav class="view-tabs findings-tabs" aria-label="Web result filters">{% for tab in web_tabs %}<a href="{{ tab.href }}" {% if tab.selected %}aria-current="page"{% endif %}>{{ tab.label }} <span>({{ tab.count }})</span></a>{% endfor %}</nav>
   {% if not search.include_web %}<div class="notice">Wider-web checking is off for this search. Enable it under Edit search.</div>
   {% elif web_results.status == 'unconfigured' %}<div class="notice">Add a Tavily API key in <a href="/settings#web-search">Settings</a> to find coins for sale on the wider web automatically. Monitored-dealer matching works without a key.</div>
   {% elif web_results.status == 'running' %}<div class="notice" role="status">Searching the wider web and checking listings for sale…</div>
-  {% elif web_results.status == 'partial' %}<div class="notice notice-error" role="alert">Some web checks could not complete. Only listings with current availability checks are shown. {{ web_results.error }}</div>
+  {% elif web_results.status == 'partial' %}<div class="notice notice-error" role="alert">Some web checks could not complete. Unverified findings remain available below with their check status. {{ web_results.error }}</div>
   {% elif web_results.status == 'error' %}<div class="notice notice-error" role="alert">Web search could not complete. {{ web_results.error }}</div>
-  {% elif not visible_sales %}<div class="empty-state"><h3>No verified for-sale listings yet</h3><p>{{ 'Try broader keywords or scan again to check more listings.' if web_results.status == 'complete' else 'Use Scan for this search to find and check listings on the wider web.' }}</p></div>{% endif %}
+  {% endif %}
   {% if web_results.checked_at %}<p class="result-count">Last web scan {{ web_results.checked_at|local_time(settings.timezone) }}. Each listing shows when its availability was checked.</p>{% endif %}
-  {% if visible_sales %}<p class="result-count">{{ visible_sales|length }} for-sale {{ 'listing' if visible_sales|length == 1 else 'listings' }} across {{ web_domain_count }} {{ 'domain' if web_domain_count == 1 else 'domains' }}. Duplicate URLs are combined.</p><div class="web-leads">{% for lead in visible_sales %}<article class="web-lead"><h3>{% if lead.url|safe_url %}<a href="{{ lead.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ lead.title }}</a>{% else %}{{ lead.title }}{% endif %}</h3><p class="coin-price">{{ lead.currency }} {{ lead.price }}</p><span class="muted">Availability checked {{ lead.sale_checked_at|local_time(settings.timezone) }}</span></article>{% endfor %}</div>{% endif %}
+  <p class="result-count">{{ web_counts.verified }} for-sale {{ 'listing' if web_counts.verified == 1 else 'listings' }} across {{ web_domain_count }} {{ 'domain' if web_domain_count == 1 else 'domains' }}{% if web_counts.unverified or web_counts.expired %}; {{ web_counts.unverified }} unverified and {{ web_counts.expired }} needing a fresh check{% endif %}.</p>
+  {% if web_items %}
+  <p class="result-count">Showing {{ web_first }}–{{ web_last }} of {{ web_total }} {{ 'potential listings' if web_view == 'all' else 'findings in this filter' }}.</p>
+  <div class="web-leads">{% for lead in web_items %}
+    <article class="web-lead">
+      <div class="finding-meta"><span class="verification-label verification-{{ lead.verification }}">{{ lead.verification_label }}</span><span class="muted">{{ lead.dealer_domain }}</span></div>
+      <h3><a href="{{ lead.url|safe_url }}" target="_blank" rel="noopener noreferrer">{{ lead.title }}</a></h3>
+      {% if lead.verification == 'verified' %}<p class="coin-price">{{ lead.currency }} {{ lead.price }}</p><p class="muted">Availability checked {{ lead.sale_checked_at|local_time(settings.timezone) }}</p>
+      {% elif lead.verification == 'expired' %}{% if lead.price and lead.currency %}<p>Last known price: {{ lead.currency }} {{ lead.price }}</p>{% endif %}<p class="muted">Last availability check {{ lead.sale_checked_at|local_time(settings.timezone) }}. Current availability is unconfirmed.</p>
+      {% else %}<p>Price and availability unconfirmed.</p><p class="muted">{{ lead.verification_note }}</p><p class="muted">{% if lead.sale_checked_at %}Check attempted {{ lead.sale_checked_at|local_time(settings.timezone) }}{% else %}Not checked yet{% endif %}</p>{% endif %}
+    </article>
+  {% endfor %}</div>
+  <nav class="pagination" aria-label="Web result pages">
+    {% if web_page > 1 %}<a href="{{ web_prev_url }}">Previous findings</a>{% else %}<span></span>{% endif %}
+    <span>Page {{ web_page }} of {{ web_pages }}</span>
+    {% if web_page < web_pages %}<a href="{{ web_next_url }}">Next findings</a>{% else %}<span></span>{% endif %}
+  </nav>
+  {% else %}<div class="empty-state"><h3>{{ 'No verified for-sale listings yet' if web_view == 'verified' else 'No potential listings in this view' }}</h3><p>Choose another filter or scan for more coin listings.</p></div>{% endif %}
   {% if web_results.check_summary %}
-  <details class="panel search-edit check-summary"><summary>Why results are hidden</summary>
-    <p class="muted">Across all {{ web_results.candidate_count }} stored candidate links, these are the latest reasons for hiding results. Counts include earlier scans; History records each run separately.</p>
+  <details class="panel search-edit check-summary"><summary>Why listings are not verified</summary>
+    <p class="muted">Latest check outcomes across {{ web_results.candidate_count }} stored links. Matching unverified leads appear in All potential; information pages, known sold items and other rejected links remain excluded. Counts include earlier scans.</p>
     <div class="table-wrap"><table><thead><tr><th scope="col">Outcome</th><th scope="col">Links</th><th scope="col">Reason</th></tr></thead><tbody>{% for check in web_results.check_summary %}<tr><td>{{ check.status }}</td><td>{{ check.count }}</td><td>{{ check.reason }}</td></tr>{% endfor %}</tbody></table></div>
-    <p class="muted">Known available matches are checked first. Failed checks are retried after 24 hours, rejected pages after 7 days. Checks stopped by the time limit or cancellation can retry immediately. Older generic failure messages become more specific when those links are checked again.</p>
+    <p class="muted">Known available matches are checked first. Temporary failures retry after 24 hours; persistent access or identity failures and rejected pages wait 7 days. Checks stopped by the time limit or cancellation can retry immediately.</p>
   </details>
   {% endif %}
 </section>

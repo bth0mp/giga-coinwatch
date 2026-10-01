@@ -133,7 +133,7 @@ class Scanner:
                     and pages_per_dealer[_dealer_host(url)] < DEEP_PAGES_PER_DEALER)
 
         def remember(state, rows):
-            # Paid leads survive a deadline. They remain hidden until verified.
+            # Paid leads survive a deadline and remain unverified until checked.
             for row in rows:
                 if row['url'] not in state['gathered'] and row['url'] not in state['retained']:
                     state['pending'].setdefault(row['url'], dict(row, sale_status='unverified',
@@ -279,7 +279,7 @@ class Scanner:
             message = '; '.join(current_errors + ([budget_message] if budget_reached else [])) or None
             rows = list(state['gathered'].values())
             if deep:
-                # Keep known available offers ahead of the bounded candidate store.
+                # Keep known available offers ahead of other retained candidates.
                 rows = ([row for url, row in state['retained'].items()
                          if row['sale_status'] == 'available' and url not in state['gathered']]
                         + sorted(rows, key=lambda row: row['sale_status'] != 'available')
