@@ -215,6 +215,14 @@ class Scanner:
                     'Web-check time limit reached;', 'Sale check was cancelled;')):
                 return False
             days = {'unverified': 1, 'rejected': 7}.get(row.get('sale_status'))
+            # Access restrictions and non-product pages rarely change overnight.
+            # Leave daily time for new leads and temporary failures; a deliberate
+            # Deep run can still revisit readable parser failures via retry_product.
+            if row.get('sale_status') == 'unverified' and any(text in row.get('sale_reason', '') for text in (
+                    'HTTP 401', 'HTTP 403', 'robots.txt disallows', 'requires a browser challenge',
+                    'requires permission or login', 'single primary product could not be identified',
+                    'does not establish an individual product identity', 'contains separate product cards')):
+                days = 7
             if not days or not row.get('sale_checked_at'):
                 return False
             try:
@@ -485,11 +493,21 @@ class Scanner:
                 scrape = scrape_source
             fetcher = Fetcher(stop_event=self.stop_event)
             sources = self.db.list_sources() if mode in ('coins', 'both') and web_depth == 'basic' else []
-            for source in sources:
-                if not source['enabled'] or (source_ids and source['id'] not in source_ids):
-                    continue
+            sources = [source for source in sources if source['enabled']
+                       and (not source_ids or source['id'] in source_ids)]
+            catalog_deadline = fetcher.deadline
+            reserved_seconds = min(30, max(0, catalog_deadline - time.monotonic()) / len(sources)) if sources else 0
+            for index, source in enumerate(sources):
                 if self.stop_event.is_set():
                     break
+                # One slow shop must not consume the time reserved for later shops.
+                # Keep the total budget and the shared robots/rate-limit state intact.
+                now = time.monotonic()
+                remaining_sources = len(sources) - index - 1
+                allowance = max(0, catalog_deadline - now - reserved_seconds * remaining_sources)
+                if len(sources) > 1:
+                    allowance = min(180, allowance)
+                fetcher.deadline = min(catalog_deadline, now + allowance)
                 self.progress(phase='Checking listings', source=source['name'])
                 try:
                     result = scrape(source, fetcher)
